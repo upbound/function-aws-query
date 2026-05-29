@@ -1,0 +1,32 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-cloudcontrol-vpcs
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Find existing VPCs (full attributes) via AWS Cloud Control ListResources,
+  # filtered client-side by tag. No AWS Config or Resource Explorer setup needed.
+  - step: vpcs-by-tag
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: ListResources
+      region: eu-central-1
+      parameters:
+        typeName: "AWS::EC2::VPC"
+      filters:
+      - name: "tag:Environment"
+        values: ["prod"]
+      target: status.prodVpcs
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: upbound-system
+        name: aws-creds

@@ -1,0 +1,24 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-caller-identity
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  - step: caller-identity
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: GetCallerIdentity
+      target: status.callerIdentity
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: upbound-system
+        name: aws-creds

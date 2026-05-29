@@ -1,0 +1,28 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-availability-zones
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  - step: availability-zones
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeAvailabilityZones
+      region: eu-central-1
+      filters:
+      - name: state
+        values: ["available"]
+      target: status.availabilityZones
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: upbound-system
+        name: aws-creds

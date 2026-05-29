@@ -1,0 +1,515 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	sqtypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/google/go-cmp/cmp"
+	"github.com/upbound/function-aws-query/input/v1beta1"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/crossplane/function-sdk-go/logging"
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
+	"github.com/crossplane/function-sdk-go/resource"
+)
+
+// respStub is an aws.HTTPClient that returns canned responses in sequence (the
+// last one repeats), so the real AWS SDK marshals the request and unmarshals our
+// response — exercising the handlers' projection and pagination for real.
+type respStub struct {
+	bodies      []string
+	contentType string
+	calls       int
+}
+
+func (s *respStub) Do(_ *http.Request) (*http.Response, error) {
+	body := s.bodies[s.calls]
+	if s.calls < len(s.bodies)-1 {
+		s.calls++
+	}
+	h := http.Header{}
+	if s.contentType != "" {
+		h.Set("Content-Type", s.contentType)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     h,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
+
+func stubCfg(rt *respStub) aws.Config {
+	return aws.Config{
+		Region:           "eu-central-1",
+		Credentials:      credentials.NewStaticCredentialsProvider("AKID", "SECRET", ""),
+		HTTPClient:       rt,
+		RetryMaxAttempts: 1,
+	}
+}
+
+func newQuery() *AWSQuery { return &AWSQuery{log: logging.NewNopLogger()} }
+
+// --- pure helpers -----------------------------------------------------------
+
+func TestToEC2Filters(t *testing.T) {
+	got := toEC2Filters([]v1beta1.Filter{{Name: "state", Values: []string{"available"}}})
+	if len(got) != 1 || aws.ToString(got[0].Name) != "state" || len(got[0].Values) != 1 || got[0].Values[0] != "available" {
+		t.Errorf("toEC2Filters wrong result: %+v", got)
+	}
+	if toEC2Filters(nil) != nil {
+		t.Error("toEC2Filters(nil) should be nil")
+	}
+}
+
+func TestToTagFilters(t *testing.T) {
+	got := toTagFilters([]v1beta1.Filter{{Name: "Environment", Values: []string{"prod"}}})
+	if len(got) != 1 || aws.ToString(got[0].Key) != "Environment" || got[0].Values[0] != "prod" {
+		t.Errorf("toTagFilters wrong result: %+v", got)
+	}
+	if toTagFilters(nil) != nil {
+		t.Error("toTagFilters(nil) should be nil")
+	}
+}
+
+func TestToSTSTags(t *testing.T) {
+	got := toSTSTags(map[string]string{"a": "1", "b": "2"})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(got))
+	}
+	seen := map[string]string{}
+	for _, tg := range got {
+		seen[aws.ToString(tg.Key)] = aws.ToString(tg.Value)
+	}
+	if seen["a"] != "1" || seen["b"] != "2" {
+		t.Errorf("toSTSTags wrong result: %+v", seen)
+	}
+	if toSTSTags(nil) != nil {
+		t.Error("toSTSTags(nil) should be nil")
+	}
+}
+
+func TestQuotaToMap(t *testing.T) {
+	got := quotaToMap(sqtypes.ServiceQuota{
+		QuotaCode: aws.String("L-1"), QuotaName: aws.String("VPCs"),
+		Unit: aws.String("None"), Adjustable: true, GlobalQuota: false, Value: aws.Float64(5),
+	})
+	want := map[string]any{
+		"quotaCode": "L-1", "quotaName": "VPCs", "unit": "None",
+		"adjustable": true, "globalQuota": false, "value": float64(5),
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("quotaToMap: -want +got:\n%s", diff)
+	}
+	// Value omitted when nil.
+	if _, ok := quotaToMap(sqtypes.ServiceQuota{QuotaCode: aws.String("L-2")})["value"]; ok {
+		t.Error("value should be omitted when nil")
+	}
+}
+
+func TestIsGlobalQuery(t *testing.T) {
+	for _, q := range []string{"GetCallerIdentity", "DescribeRegions"} {
+		if !isGlobalQuery(q) {
+			t.Errorf("%s should be global", q)
+		}
+	}
+	if isGlobalQuery("DescribeVpcs") {
+		t.Error("DescribeVpcs should not be global")
+	}
+}
+
+func TestIniRegion(t *testing.T) {
+	if got := iniRegion([]byte("[default]\nregion = eu-west-1\n")); got != "eu-west-1" {
+		t.Errorf("iniRegion = %q, want eu-west-1", got)
+	}
+	if got := iniRegion(nil); got != "" {
+		t.Errorf("iniRegion(nil) = %q, want empty", got)
+	}
+}
+
+func TestResolveRegion(t *testing.T) {
+	creds := map[string][]byte{"credentials": []byte("[default]\nregion = eu-west-1\n")}
+	cases := map[string]struct {
+		creds map[string][]byte
+		in    *v1beta1.Input
+		want  string
+	}{
+		"InputRegionWins": {creds: creds, in: &v1beta1.Input{Region: aws.String("ap-south-1"), QueryType: "DescribeVpcs"}, want: "ap-south-1"},
+		"INIRegion":       {creds: creds, in: &v1beta1.Input{QueryType: "DescribeVpcs"}, want: "eu-west-1"},
+		"GlobalFallback":  {creds: map[string][]byte{}, in: &v1beta1.Input{QueryType: "DescribeRegions"}, want: "us-east-1"},
+		"EmptyNonGlobal":  {creds: map[string][]byte{}, in: &v1beta1.Input{QueryType: "DescribeVpcs"}, want: ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := resolveRegion(tc.creds, tc.in); got != tc.want {
+				t.Errorf("resolveRegion = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWebIdentityTokenRetriever(t *testing.T) {
+	t.Run("SecretEmpty", func(t *testing.T) {
+		if _, err := webIdentityTokenRetriever(nil, &v1beta1.WebIdentity{RoleARN: "r"}); err == nil {
+			t.Error("expected error for empty token secret")
+		}
+	})
+	t.Run("SecretOK", func(t *testing.T) {
+		r, err := webIdentityTokenRetriever([]byte("jwt"), &v1beta1.WebIdentity{RoleARN: "r"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tok, _ := r.GetIdentityToken()
+		if string(tok) != "jwt" {
+			t.Errorf("token = %q, want jwt", tok)
+		}
+	})
+	t.Run("FilesystemNoPath", func(t *testing.T) {
+		if _, err := webIdentityTokenRetriever(nil, &v1beta1.WebIdentity{RoleARN: "r", TokenConfig: &v1beta1.TokenConfig{Source: "Filesystem"}}); err == nil {
+			t.Error("expected error for missing fsPath")
+		}
+	})
+	t.Run("FilesystemOK", func(t *testing.T) {
+		if _, err := webIdentityTokenRetriever(nil, &v1beta1.WebIdentity{RoleARN: "r", TokenConfig: &v1beta1.TokenConfig{Source: "Filesystem", FSPath: aws.String("/tmp/token")}}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+	t.Run("Unsupported", func(t *testing.T) {
+		if _, err := webIdentityTokenRetriever(nil, &v1beta1.WebIdentity{RoleARN: "r", TokenConfig: &v1beta1.TokenConfig{Source: "Bogus"}}); err == nil {
+			t.Error("expected error for unsupported source")
+		}
+	})
+}
+
+// --- buildAWSConfig ---------------------------------------------------------
+
+func TestBuildAWSConfig(t *testing.T) {
+	iniCreds := map[string][]byte{"credentials": []byte("[default]\naws_access_key_id = AK\naws_secret_access_key = SK\nregion = eu-west-1\n")}
+
+	t.Run("SecretResolvesCredsAndRegion", func(t *testing.T) {
+		cfg, err := buildAWSConfig(context.Background(), iniCreds, &v1beta1.Input{QueryType: "DescribeVpcs"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Region != "eu-west-1" {
+			t.Errorf("region = %q, want eu-west-1", cfg.Region)
+		}
+		got, err := cfg.Credentials.Retrieve(context.Background())
+		if err != nil {
+			t.Fatalf("retrieve: %v", err)
+		}
+		if got.AccessKeyID != "AK" || got.SecretAccessKey != "SK" {
+			t.Errorf("creds = %+v, want AK/SK", got)
+		}
+	})
+
+	t.Run("SecretEmptyErrors", func(t *testing.T) {
+		if _, err := buildAWSConfig(context.Background(), map[string][]byte{}, &v1beta1.Input{QueryType: "DescribeVpcs"}); err == nil {
+			t.Error("expected error for missing credentials")
+		}
+	})
+
+	t.Run("WebIdentityRequiresRoleARN", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{Source: v1beta1.IdentitySourceWebIdentity}}
+		if _, err := buildAWSConfig(context.Background(), map[string][]byte{}, in); err == nil {
+			t.Error("expected error for missing roleARN")
+		}
+	})
+
+	t.Run("UnsupportedSource", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{Source: "Bogus"}}
+		if _, err := buildAWSConfig(context.Background(), map[string][]byte{}, in); err == nil {
+			t.Error("expected error for unsupported source")
+		}
+	})
+
+	t.Run("IRSANoSecret", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{Source: v1beta1.IdentitySourceIRSA}}
+		cfg, err := buildAWSConfig(context.Background(), map[string][]byte{}, in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Region != "us-east-1" {
+			t.Errorf("region = %q, want us-east-1 (global fallback)", cfg.Region)
+		}
+	})
+
+	t.Run("AssumeRoleChainWires", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeVpcs", Identity: &v1beta1.Identity{
+			Source:          v1beta1.IdentitySourceSecret,
+			AssumeRoleChain: []v1beta1.AssumeRole{{RoleARN: "arn:aws:iam::222:role/x"}},
+		}}
+		cfg, err := buildAWSConfig(context.Background(), iniCreds, in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Credentials == nil {
+			t.Error("expected credentials provider to be set by the chain")
+		}
+	})
+}
+
+// --- resolveRegionRef -------------------------------------------------------
+
+func TestResolveRegionRef(t *testing.T) {
+	f := &Function{log: logging.NewNopLogger()}
+
+	t.Run("Spec", func(t *testing.T) {
+		req := &fnv1.RunFunctionRequest{
+			Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(
+				`{"apiVersion":"example.io/v1alpha1","kind":"XAccount","metadata":{"name":"x"},"spec":{"region":"ap-south-1"}}`)}},
+		}
+		in := &v1beta1.Input{RegionRef: aws.String("spec.region")}
+		if err := f.resolveRegionRef(req, in, &fnv1.RunFunctionResponse{}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if aws.ToString(in.Region) != "ap-south-1" {
+			t.Errorf("region = %q, want ap-south-1", aws.ToString(in.Region))
+		}
+	})
+
+	t.Run("Status", func(t *testing.T) {
+		req := &fnv1.RunFunctionRequest{
+			Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(
+				`{"apiVersion":"example.io/v1alpha1","kind":"XAccount","metadata":{"name":"x"},"status":{"chosenRegion":"sa-east-1"}}`)}},
+		}
+		in := &v1beta1.Input{RegionRef: aws.String("status.chosenRegion")}
+		if err := f.resolveRegionRef(req, in, &fnv1.RunFunctionResponse{}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if aws.ToString(in.Region) != "sa-east-1" {
+			t.Errorf("region = %q, want sa-east-1", aws.ToString(in.Region))
+		}
+	})
+
+	t.Run("Unrecognized", func(t *testing.T) {
+		in := &v1beta1.Input{RegionRef: aws.String("bogus.x")}
+		if err := f.resolveRegionRef(&fnv1.RunFunctionRequest{}, in, &fnv1.RunFunctionResponse{}); err == nil {
+			t.Error("expected error for unrecognized regionRef prefix")
+		}
+	})
+
+	t.Run("NoRef", func(t *testing.T) {
+		in := &v1beta1.Input{}
+		if err := f.resolveRegionRef(&fnv1.RunFunctionRequest{}, in, &fnv1.RunFunctionResponse{}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if in.Region != nil {
+			t.Error("region should remain unset")
+		}
+	})
+}
+
+// --- handler validation guards (no network) ---------------------------------
+
+func TestHandlerValidationGuards(t *testing.T) {
+	q := newQuery()
+	ctx := context.Background()
+	noRegion := aws.Config{} // empty region triggers the region-required guard
+
+	cases := map[string]func() (any, error){
+		"AZsNoRegion":       func() (any, error) { return q.describeAvailabilityZones(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoRegion":    func() (any, error) { return q.describeImages(ctx, noRegion, &v1beta1.Input{}) },
+		"QuotasNoRegion":    func() (any, error) { return q.listServiceQuotas(ctx, noRegion, &v1beta1.Input{}) },
+		"GetQuotaNoRegion":  func() (any, error) { return q.getServiceQuota(ctx, noRegion, &v1beta1.Input{}) },
+		"ListResNoRegion":   func() (any, error) { return q.listResources(ctx, noRegion, &v1beta1.Input{}) },
+		"GetResNoRegion":    func() (any, error) { return q.getResources(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoFilter":    func() (any, error) { return q.describeImages(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"QuotasNoService":   func() (any, error) { return q.listServiceQuotas(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"GetQuotaNoCodes":   func() (any, error) { return q.getServiceQuota(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"ListResNoTypeName": func() (any, error) { return q.listResources(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := call(); err == nil {
+				t.Error("expected a validation error, got nil")
+			}
+		})
+	}
+}
+
+// --- handlers with stubbed HTTP transport (projection + pagination) ---------
+
+func TestGetCallerIdentity(t *testing.T) {
+	body := `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">` +
+		`<GetCallerIdentityResult><Arn>arn:aws:iam::123456789012:user/test</Arn>` +
+		`<UserId>AIDEXAMPLE</UserId><Account>123456789012</Account></GetCallerIdentityResult>` +
+		`<ResponseMetadata><RequestId>req</RequestId></ResponseMetadata></GetCallerIdentityResponse>`
+	got, err := newQuery().getCallerIdentity(context.Background(), stubCfg(&respStub{bodies: []string{body}, contentType: "text/xml"}), &v1beta1.Input{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]any{"account": "123456789012", "arn": "arn:aws:iam::123456789012:user/test", "userId": "AIDEXAMPLE"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+func TestDescribeRegions(t *testing.T) {
+	body := `<DescribeRegionsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<regionInfo><item><regionName>us-east-1</regionName><regionEndpoint>ec2.us-east-1.amazonaws.com</regionEndpoint><optInStatus>opt-in-not-required</optInStatus></item></regionInfo>` +
+		`</DescribeRegionsResponse>`
+	got, err := newQuery().describeRegions(context.Background(), stubCfg(&respStub{bodies: []string{body}, contentType: "text/xml"}), &v1beta1.Input{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{map[string]any{"name": "us-east-1", "endpoint": "ec2.us-east-1.amazonaws.com", "optInStatus": "opt-in-not-required"}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+func TestListServiceQuotasPaginates(t *testing.T) {
+	page1 := `{"NextToken":"n","Quotas":[{"QuotaCode":"L-1","QuotaName":"VPCs","Value":5.0,"Unit":"None","Adjustable":true,"GlobalQuota":false}]}`
+	page2 := `{"Quotas":[{"QuotaCode":"L-2","QuotaName":"EIPs","Value":10.0,"Unit":"None","Adjustable":false,"GlobalQuota":false}]}`
+	in := &v1beta1.Input{Parameters: map[string]string{"serviceCode": "ec2"}}
+	got, err := newQuery().listServiceQuotas(context.Background(), stubCfg(&respStub{bodies: []string{page1, page2}, contentType: "application/x-amz-json-1.1"}), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	list, ok := got.([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("expected 2 quotas across 2 pages, got %#v", got)
+	}
+}
+
+func TestGetResourcesPaginates(t *testing.T) {
+	page1 := `{"PaginationToken":"tok","ResourceTagMappingList":[{"ResourceARN":"arn:a","Tags":[{"Key":"Environment","Value":"prod"}]}]}`
+	page2 := `{"PaginationToken":"","ResourceTagMappingList":[{"ResourceARN":"arn:b","Tags":[]}]}`
+	in := &v1beta1.Input{Parameters: map[string]string{"resourceTypeFilters": "ec2:subnet"}}
+	got, err := newQuery().getResources(context.Background(), stubCfg(&respStub{bodies: []string{page1, page2}, contentType: "application/x-amz-json-1.1"}), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{
+		map[string]any{"arn": "arn:a", "tags": map[string]any{"Environment": "prod"}},
+		map[string]any{"arn": "arn:b", "tags": map[string]any{}},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+func TestListResourcesFiltersClientSide(t *testing.T) {
+	body := `{"TypeName":"AWS::EC2::VPC","ResourceDescriptions":[` +
+		`{"Identifier":"vpc-1","Properties":"{\"VpcId\":\"vpc-1\",\"Tags\":[{\"Key\":\"Environment\",\"Value\":\"prod\"}]}"},` +
+		`{"Identifier":"vpc-2","Properties":"{\"VpcId\":\"vpc-2\",\"Tags\":[{\"Key\":\"Environment\",\"Value\":\"dev\"}]}"}` +
+		`]}`
+	in := &v1beta1.Input{
+		Parameters: map[string]string{"typeName": "AWS::EC2::VPC"},
+		Filters:    []v1beta1.Filter{{Name: "tag:Environment", Values: []string{"prod"}}},
+	}
+	got, err := newQuery().listResources(context.Background(), stubCfg(&respStub{bodies: []string{body}, contentType: "application/x-amz-json-1.0"}), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	list, ok := got.([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("expected 1 VPC after client-side tag filter, got %#v", got)
+	}
+	m := list[0].(map[string]any)
+	if m["identifier"] != "vpc-1" {
+		t.Errorf("identifier = %v, want vpc-1", m["identifier"])
+	}
+	props, ok := m["properties"].(map[string]any)
+	if !ok || props["VpcId"] != "vpc-1" {
+		t.Errorf("properties = %#v, want VpcId vpc-1", m["properties"])
+	}
+}
+
+func TestDescribeImages(t *testing.T) {
+	body := `<DescribeImagesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<imagesSet><item><imageId>ami-1</imageId><name>ubuntu</name><imageOwnerId>099720109477</imageOwnerId>` +
+		`<creationDate>2024-01-01T00:00:00.000Z</creationDate><architecture>x86_64</architecture>` +
+		`<imageState>available</imageState><rootDeviceType>ebs</rootDeviceType><description>desc</description></item></imagesSet>` +
+		`</DescribeImagesResponse>`
+	in := &v1beta1.Input{Parameters: map[string]string{"owners": "099720109477"}}
+	got, err := newQuery().describeImages(context.Background(), stubCfg(&respStub{bodies: []string{body}, contentType: "text/xml"}), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{map[string]any{
+		"imageId": "ami-1", "name": "ubuntu", "ownerId": "099720109477",
+		"creationDate": "2024-01-01T00:00:00.000Z", "architecture": "x86_64",
+		"state": "available", "rootDeviceType": "ebs", "description": "desc",
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+// --- dispatch + remaining skip paths ----------------------------------------
+
+func TestAWSQueryUnsupportedType(t *testing.T) {
+	creds := map[string][]byte{"credentials": []byte("[default]\naws_access_key_id = AK\naws_secret_access_key = SK\n")}
+	if _, err := newQuery().awsQuery(context.Background(), creds, &v1beta1.Input{QueryType: "Nope"}); err == nil {
+		t.Error("expected an error for an unsupported queryType")
+	}
+}
+
+func TestRunFunctionSkipContextTarget(t *testing.T) {
+	called := false
+	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, _ *v1beta1.Input) (any, error) {
+		called = true
+		return nil, nil
+	}}}
+	ctx, err := structpb.NewStruct(map[string]any{"existing": "data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &fnv1.RunFunctionRequest{
+		Meta: &fnv1.RequestMeta{Tag: "test"},
+		Input: resource.MustStructJSON(`{
+			"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
+			"queryType":"DescribeRegions","target":"context.existing","skipQueryWhenTargetHasData":true
+		}`),
+		Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(observedXR)}},
+		Context:  ctx,
+	}
+	rsp, err := f.RunFunction(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if called {
+		t.Error("awsQuery should not be called when the context target already has data")
+	}
+	if !hasCondition(rsp, "FunctionSkip") {
+		t.Errorf("expected a FunctionSkip condition, got: %v", rsp.GetConditions())
+	}
+}
+
+func TestRunFunctionIntervalSkip(t *testing.T) {
+	called := false
+	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, _ *v1beta1.Input) (any, error) {
+		called = true
+		return nil, nil
+	}}}
+	// A recent lastQueryTime within the interval must cause a skip.
+	now := time.Now().Format(time.RFC3339)
+	observed := fmt.Sprintf(`{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"test"},"status":{"data":[{"lastQueryTime":%q}]}}`, now)
+	req := &fnv1.RunFunctionRequest{
+		Meta: &fnv1.RequestMeta{Tag: "test"},
+		Input: resource.MustStructJSON(`{
+			"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
+			"queryType":"DescribeRegions","target":"status.data","queryIntervalMinutes":60
+		}`),
+		Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(observed)}},
+	}
+	rsp, err := f.RunFunction(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if called {
+		t.Error("awsQuery should not be called within the query interval")
+	}
+	if !hasCondition(rsp, "FunctionSkip") {
+		t.Errorf("expected a FunctionSkip condition, got: %v", rsp.GetConditions())
+	}
+}

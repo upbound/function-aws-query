@@ -1,0 +1,33 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-ami-lookup
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  - step: ami-lookup
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeImages
+      region: eu-central-1
+      parameters:
+        # Canonical's AWS account ID.
+        owners: "099720109477"
+      filters:
+      - name: name
+        values: ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+      - name: state
+        values: ["available"]
+      target: status.amis
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: upbound-system
+        name: aws-creds

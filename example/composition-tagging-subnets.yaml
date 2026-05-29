@@ -1,0 +1,33 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-tagging-subnets
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Find existing subnet ARNs by tag via the Resource Groups Tagging API
+  # (server-side tag filter; returns arn + tags). regionRef pulls the region
+  # from the XR spec, and the result is stashed in the pipeline context.
+  - step: subnets-by-tag
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: GetResources
+      regionRef: spec.region
+      parameters:
+        resourceTypeFilters: "ec2:subnet"
+      filters:
+      - name: "Environment"
+        values: ["prod"]
+      target: context.subnets
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: upbound-system
+        name: aws-creds

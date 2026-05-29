@@ -1,0 +1,25 @@
+# Attach this to the installed Function via spec.runtimeConfigRef to give the
+# function pod an AWS identity for the IRSA or PodIdentity sources.
+#
+#   apiVersion: pkg.crossplane.io/v1
+#   kind: Function
+#   metadata:
+#     name: function-aws-query
+#   spec:
+#     package: xpkg.upbound.io/upbound/function-aws-query:vX.Y.Z
+#     runtimeConfigRef:
+#       name: function-aws-query
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: function-aws-query
+spec:
+  serviceAccountTemplate:
+    metadata:
+      # IRSA: annotate the function's ServiceAccount with the IAM role to assume.
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/crossplane-function-aws-query
+  # PodIdentity: omit the annotation above and instead create an EKS Pod Identity
+  # association for this ServiceAccount (name/namespace) out-of-band. The SDK
+  # default chain then resolves credentials from the container credentials endpoint.

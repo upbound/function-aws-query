@@ -1,0 +1,6 @@
+apiVersion: example.io/v1alpha1
+kind: XAccount
+metadata:
+  name: example-account
+spec:
+  region: eu-central-1

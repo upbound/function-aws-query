@@ -1,0 +1,23 @@
+---
+apiVersion: meta.pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-aws-query
+  annotations:
+    meta.crossplane.io/maintainer: Upbound <support@upbound.io>
+    meta.crossplane.io/source: github.com/upbound/function-aws-query
+    meta.crossplane.io/license: Apache-2.0
+    meta.crossplane.io/description: A composition function for read-only queries against AWS APIs.
+    meta.crossplane.io/readme: |
+      This composition function performs read-only queries against AWS APIs and
+      exposes the results as structured data to downstream composition steps
+      (go-templating, patch-and-transform, etc.). It supports service-metadata
+      queries (caller identity, regions, availability zones, AMI lookups, service
+      quotas) and generic existing-resource discovery (AWS Cloud Control
+      ListResources and the Resource Groups Tagging API GetResources).
+
+      Authentication mirrors the Official AWS Provider: the credentials secret is
+      a shared-credentials INI compatible with provider-upjet-aws, and the
+      Secret, IRSA, WebIdentity, and PodIdentity sources are supported, plus an
+      STS assume-role chain.
+spec: {}

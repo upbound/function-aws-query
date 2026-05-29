@@ -1,0 +1,26 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-irsa
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # IRSA / Pod Identity: no credentials block. The function pod's ServiceAccount
+  # carries the role (see deploymentruntimeconfig.yaml). An optional assumeRoleChain
+  # lets a single function identity read across accounts.
+  - step: available-regions
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeRegions
+      region: us-east-1
+      identity:
+        source: IRSA
+        assumeRoleChain:
+        - roleARN: arn:aws:iam::222222222222:role/crossplane-readonly
+      target: status.allAvailableRegions

@@ -1,0 +1,207 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: inputs.aws.fn.crossplane.io
+spec:
+  group: aws.fn.crossplane.io
+  names:
+    categories:
+    - crossplane
+    kind: Input
+    listKind: InputList
+    plural: inputs
+    singular: input
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Input configures function-aws-query: which read-only AWS query to run, how to
+          authenticate, and where to store the result.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          filters:
+            description: |-
+              Filters are name/values pairs. Their interpretation depends on QueryType:
+                - EC2 ops (DescribeAvailabilityZones, DescribeImages): EC2 filter names
+                  such as "tag:Name", "state", "architecture".
+                - GetResources (Tagging API): each entry is a tag filter where name is
+                  the tag key and values are the tag values (server-side).
+                - ListResources (Cloud Control): client-side property match where name
+                  is a top-level property or "tag:Key".
+            items:
+              description: |-
+                Filter is a generic name/values pair. See Input.Filters for per-QueryType
+                interpretation.
+              properties:
+                name:
+                  description: Name of the filter (e.g. an EC2 filter name, a tag
+                    key, or a property).
+                  type: string
+                values:
+                  description: Values to match. Semantics (OR within a filter) follow
+                    the target API.
+                  items:
+                    type: string
+                  type: array
+              required:
+              - name
+              - values
+              type: object
+            type: array
+          identity:
+            description: Identity selects the authentication mechanism. Defaults to
+              Secret.
+            properties:
+              assumeRoleChain:
+                description: |-
+                  AssumeRoleChain assumes a chain of roles (in order) on top of the base
+                  credentials resolved from Source.
+                items:
+                  description: AssumeRole describes a single STS AssumeRole hop.
+                  properties:
+                    externalID:
+                      description: ExternalID to pass to AssumeRole, if the role's
+                        trust policy requires it.
+                      type: string
+                    roleARN:
+                      description: RoleARN is the role to assume.
+                      type: string
+                    roleSessionName:
+                      description: RoleSessionName for the assumed role session.
+                      type: string
+                    tags:
+                      additionalProperties:
+                        type: string
+                      description: Tags are session tags to pass to AssumeRole.
+                      type: object
+                    transitiveTagKeys:
+                      description: |-
+                        TransitiveTagKeys lists session tag keys that propagate to downstream
+                        AssumeRole calls in the chain.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - roleARN
+                  type: object
+                type: array
+              source:
+                default: Secret
+                description: Source of the base credentials.
+                enum:
+                - Secret
+                - IRSA
+                - WebIdentity
+                - PodIdentity
+                type: string
+              webIdentity:
+                description: |-
+                  WebIdentity configures the AssumeRoleWithWebIdentity flow. Required when
+                  Source is WebIdentity.
+                properties:
+                  roleARN:
+                    description: RoleARN is the IAM role to assume with the web identity
+                      token.
+                    type: string
+                  roleSessionName:
+                    description: RoleSessionName is an optional session name for the
+                      assumed role.
+                    type: string
+                  tokenConfig:
+                    description: TokenConfig selects where the web identity token
+                      comes from.
+                    properties:
+                      fsPath:
+                        description: FSPath is the path to the token file when Source
+                          is Filesystem.
+                        type: string
+                      source:
+                        description: |-
+                          Source of the token. With Secret, the token bytes arrive via the function
+                          credentials block (key "token"). With Filesystem, FSPath is read.
+                        enum:
+                        - Secret
+                        - Filesystem
+                        type: string
+                    required:
+                    - source
+                    type: object
+                required:
+                - roleARN
+                type: object
+            type: object
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          parameters:
+            additionalProperties:
+              type: string
+            description: |-
+              Parameters carries scalar/string-list args specific to each QueryType:
+                allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
+                serviceCode, quotaCode                                                 [ServiceQuotas]
+                typeName (e.g. AWS::EC2::VPC), resourceModel (json), roleArn           [Cloud Control]
+                resourceTypeFilters (csv, e.g. "ec2:vpc,ec2:subnet")                   [Tagging API]
+              Comma-separated values are split by the handler.
+            type: object
+          queryIntervalMinutes:
+            description: |-
+              QueryIntervalMinutes specifies the minimum interval between queries in
+              minutes, to prevent throttling. Default is 0 (no interval limiting).
+            type: integer
+          queryType:
+            description: QueryType selects the AWS read operation to perform.
+            enum:
+            - GetCallerIdentity
+            - DescribeRegions
+            - DescribeAvailabilityZones
+            - DescribeImages
+            - ListServiceQuotas
+            - GetServiceQuota
+            - ListResources
+            - GetResources
+            type: string
+          region:
+            description: |-
+              Region to target. Optional for global-ish calls (GetCallerIdentity,
+              DescribeRegions). If empty, falls back to RegionRef, the credential
+              profile region, then the AWS_REGION environment variable.
+            type: string
+          regionRef:
+            description: RegionRef resolves the region from a status./context./spec.
+              field path.
+            type: string
+          skipQueryWhenTargetHasData:
+            description: |-
+              SkipQueryWhenTargetHasData skips the query when the target already holds
+              data. Default is false to ensure continuous reconciliation.
+            type: boolean
+          target:
+            description: |-
+              Target where to store the query result. Must start with "status." or
+              "context.". Supports dot and bracket notation for nested fields.
+            type: string
+        required:
+        - queryType
+        - target
+        type: object
+    served: true
+    storage: true

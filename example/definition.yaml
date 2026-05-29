@@ -1,0 +1,25 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xaccounts.example.io
+spec:
+  group: example.io
+  names:
+    kind: XAccount
+    plural: xaccounts
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              region:
+                type: string
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
