@@ -369,7 +369,11 @@ func quotaToMap(quota sqtypes.ServiceQuota) map[string]any {
 }
 
 // listResources lists resources of a CloudFormation-modeled type (Cloud Control,
-// paginated), returning full properties and applying client-side filters.
+// paginated) and applies client-side filters. ListResources itself returns only
+// the primary identifier (plus a thin subset of properties) for most types, so
+// by default each resource is hydrated with GetResource to obtain the full model
+// (including Tags). Set parameters.hydrate=false to skip hydration and return
+// just the listed identifiers — faster, but tag/attribute filters won't match.
 func (q *AWSQuery) listResources(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
 	if cfg.Region == "" {
 		return nil, errRegionRequired("ListResources")
@@ -378,14 +382,24 @@ func (q *AWSQuery) listResources(ctx context.Context, cfg aws.Config, in *v1beta
 	if typeName == "" {
 		return nil, errors.New("ListResources requires parameters.typeName (e.g. \"AWS::EC2::VPC\")")
 	}
+	roleArn := in.Parameters["roleArn"]
+	hydrate := true
+	if v, ok := in.Parameters["hydrate"]; ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			hydrate = b
+		}
+	}
+
+	client := cloudcontrol.NewFromConfig(cfg)
 	input := &cloudcontrol.ListResourcesInput{TypeName: aws.String(typeName)}
 	if rm := in.Parameters["resourceModel"]; rm != "" {
 		input.ResourceModel = aws.String(rm)
 	}
-	if ra := in.Parameters["roleArn"]; ra != "" {
-		input.RoleArn = aws.String(ra)
+	if roleArn != "" {
+		input.RoleArn = aws.String(roleArn)
 	}
-	p := cloudcontrol.NewListResourcesPaginator(cloudcontrol.NewFromConfig(cfg), input)
+
+	p := cloudcontrol.NewListResourcesPaginator(client, input)
 	res := []any{}
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
@@ -393,22 +407,52 @@ func (q *AWSQuery) listResources(ctx context.Context, cfg aws.Config, in *v1beta
 			return nil, errors.Wrap(err, "ListResources failed")
 		}
 		for _, rd := range page.ResourceDescriptions {
-			props := map[string]any{}
-			if rd.Properties != nil {
-				if err := json.Unmarshal([]byte(*rd.Properties), &props); err != nil {
-					q.log.Debug("cannot parse Cloud Control resource properties", "error", err)
+			id := aws.ToString(rd.Identifier)
+			props := parseCloudControlProps(rd.Properties, q.log)
+			if hydrate {
+				props, err = q.getCloudControlResource(ctx, client, typeName, id, roleArn)
+				if err != nil {
+					return nil, err
 				}
 			}
 			if !matchesClientFilters(props, in.Filters) {
 				continue
 			}
 			res = append(res, map[string]any{
-				"identifier": aws.ToString(rd.Identifier),
+				"identifier": id,
 				"properties": props,
 			})
 		}
 	}
 	return res, nil
+}
+
+// getCloudControlResource fetches the full property model for a single resource.
+func (q *AWSQuery) getCloudControlResource(ctx context.Context, client *cloudcontrol.Client, typeName, identifier, roleArn string) (map[string]any, error) {
+	in := &cloudcontrol.GetResourceInput{TypeName: aws.String(typeName), Identifier: aws.String(identifier)}
+	if roleArn != "" {
+		in.RoleArn = aws.String(roleArn)
+	}
+	out, err := client.GetResource(ctx, in)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetResource %s %s failed", typeName, identifier)
+	}
+	if out.ResourceDescription == nil {
+		return map[string]any{}, nil
+	}
+	return parseCloudControlProps(out.ResourceDescription.Properties, q.log), nil
+}
+
+// parseCloudControlProps unmarshals a Cloud Control Properties JSON string into a
+// structpb-safe map.
+func parseCloudControlProps(properties *string, log logging.Logger) map[string]any {
+	props := map[string]any{}
+	if properties != nil {
+		if err := json.Unmarshal([]byte(*properties), &props); err != nil {
+			log.Debug("cannot parse Cloud Control resource properties", "error", err)
+		}
+	}
+	return props
 }
 
 // getResources finds resources by tag/type (Resource Groups Tagging API,

@@ -12,8 +12,13 @@ go run . --insecure --debug
 ```shell
 # In another terminal, render an example. Edit secrets/aws-creds.yaml first.
 crossplane render xr.yaml composition.yaml functions.yaml \
-  --function-credentials=secrets/aws-creds.yaml -r
+  --function-credentials=secrets/aws-creds.yaml -rc
 ```
+
+`-rc` is `-r` (function results) + `-c` (context). Using it everywhere is the
+simplest choice: status-target examples just print an empty context block, while
+context-target examples (e.g. `composition-tagging-subnets.yaml`) need `-c` to
+show their result.
 
 The result is written to the XR `status` (or the pipeline `context`), e.g. for
 `composition.yaml`:
@@ -48,8 +53,11 @@ status:
 
 ```shell
 crossplane render xr.yaml composition-caller-identity.yaml functions.yaml \
-  --function-credentials=secrets/aws-creds.yaml -r
+  --function-credentials=secrets/aws-creds.yaml -rc
 ```
+
+`make render` runs all of these and `make commands` prints each ready-to-paste
+command.
 
 ## Dynamic queries
 
@@ -63,7 +71,7 @@ query. This is the AWS analog of azresourcegraph's `queryRef`/`subscriptionsRef`
 
 ```shell
 crossplane render xr-dynamic.yaml composition-dynamic-refs.yaml functions.yaml \
-  --function-credentials=secrets/aws-creds.yaml -r
+  --function-credentials=secrets/aws-creds.yaml -rc
 ```
 
 `composition-dynamic-context.yaml` instead pulls them from the pipeline
@@ -74,7 +82,7 @@ values to context; here `render` seeds them with `--context-values`:
 crossplane render xr.yaml composition-dynamic-context.yaml functions.yaml \
   --function-credentials=secrets/aws-creds.yaml \
   --context-values='awsQuery={"region":"eu-central-1","imageParams":{"owners":"099720109477"},"imageFilters":[{"name":"name","values":["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]}]}' \
-  -r
+  -rc
 ```
 
 **Chaining queries:** to feed one query's output into another, write it to

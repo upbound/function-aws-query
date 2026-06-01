@@ -397,13 +397,15 @@ func TestGetResourcesPaginates(t *testing.T) {
 	}
 }
 
+// TestListResourcesFiltersClientSide uses hydrate=false so the client-side
+// filter runs against the list properties directly (no GetResource calls).
 func TestListResourcesFiltersClientSide(t *testing.T) {
 	body := `{"TypeName":"AWS::EC2::VPC","ResourceDescriptions":[` +
 		`{"Identifier":"vpc-1","Properties":"{\"VpcId\":\"vpc-1\",\"Tags\":[{\"Key\":\"Environment\",\"Value\":\"prod\"}]}"},` +
 		`{"Identifier":"vpc-2","Properties":"{\"VpcId\":\"vpc-2\",\"Tags\":[{\"Key\":\"Environment\",\"Value\":\"dev\"}]}"}` +
 		`]}`
 	in := &v1beta1.Input{
-		Parameters: map[string]string{"typeName": "AWS::EC2::VPC"},
+		Parameters: map[string]string{"typeName": "AWS::EC2::VPC", "hydrate": "false"},
 		Filters:    []v1beta1.Filter{{Name: "tag:Environment", Values: []string{"prod"}}},
 	}
 	got, err := newQuery().listResources(context.Background(), stubCfg(&respStub{bodies: []string{body}, contentType: "application/x-amz-json-1.0"}), in)
@@ -421,6 +423,32 @@ func TestListResourcesFiltersClientSide(t *testing.T) {
 	props, ok := m["properties"].(map[string]any)
 	if !ok || props["VpcId"] != "vpc-1" {
 		t.Errorf("properties = %#v, want VpcId vpc-1", m["properties"])
+	}
+}
+
+// TestListResourcesHydrates covers the default path: ListResources returns only
+// the identifier, then GetResource hydrates the full model (incl. Tags), which
+// the client-side filter then matches.
+func TestListResourcesHydrates(t *testing.T) {
+	listBody := `{"TypeName":"AWS::EC2::VPC","ResourceDescriptions":[{"Identifier":"vpc-1","Properties":"{\"VpcId\":\"vpc-1\"}"}]}`
+	getBody := `{"TypeName":"AWS::EC2::VPC","ResourceDescription":{"Identifier":"vpc-1","Properties":"{\"VpcId\":\"vpc-1\",\"CidrBlock\":\"10.0.0.0/24\",\"Tags\":[{\"Key\":\"Environment\",\"Value\":\"prod\"}]}"}}`
+	in := &v1beta1.Input{
+		Parameters: map[string]string{"typeName": "AWS::EC2::VPC"}, // hydrate defaults to true
+		Filters:    []v1beta1.Filter{{Name: "tag:Environment", Values: []string{"prod"}}},
+	}
+	// First HTTP call = ListResources, subsequent = GetResource (last repeats).
+	stub := &respStub{bodies: []string{listBody, getBody}, contentType: "application/x-amz-json-1.0"}
+	got, err := newQuery().listResources(context.Background(), stubCfg(stub), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	list, ok := got.([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("expected 1 hydrated VPC, got %#v", got)
+	}
+	props := list[0].(map[string]any)["properties"].(map[string]any)
+	if props["CidrBlock"] != "10.0.0.0/24" {
+		t.Errorf("expected hydrated CidrBlock, got %#v", props)
 	}
 }
 

@@ -28,7 +28,7 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 
 | `queryType` | Backend | Returns |
 |---|---|---|
-| `ListResources` | AWS Cloud Control | `[{identifier, properties{…}}]` — full attributes for any CloudFormation-modeled type; filter client-side via `filters` |
+| `ListResources` | AWS Cloud Control | `[{identifier, properties{…}}]` for any CloudFormation-modeled type; each resource is hydrated via `GetResource` for full attributes + tags (set `parameters.hydrate=false` for identifiers only). Filter client-side via `filters`. |
 | `GetResources` | Resource Groups Tagging API | `[{arn, tags{}}]` — server-side tag/type filtering |
 
 ## Input reference
@@ -44,7 +44,7 @@ filters:                                # or filtersRef: <path> (status./context
 parameters:                             # or parametersRef: <path>; scalar args per queryType:
   # allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
   # serviceCode, quotaCode                                                 [Service Quotas]
-  # typeName, resourceModel, roleArn                                       [Cloud Control]
+  # typeName, resourceModel, roleArn, hydrate (default true)               [Cloud Control]
   # resourceTypeFilters (csv)                                              [Tagging API]
   typeName: "AWS::EC2::VPC"
 target: status.prodVpcs                 # required; status.* or context.*
@@ -87,7 +87,7 @@ go run . --insecure --debug &
 
 # 3. Render any example (see example/ for one composition per queryType).
 crossplane render example/xr.yaml example/composition.yaml example/functions.yaml \
-  --function-credentials=example/secrets/aws-creds.yaml -r
+  --function-credentials=example/secrets/aws-creds.yaml -rc
 ```
 
 The rendered XR shows the query result under `status` (here,

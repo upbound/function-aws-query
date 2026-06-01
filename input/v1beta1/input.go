@@ -53,7 +53,8 @@ type Input struct {
 	// Parameters carries scalar/string-list args specific to each QueryType:
 	//   allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
 	//   serviceCode, quotaCode                                                 [ServiceQuotas]
-	//   typeName (e.g. AWS::EC2::VPC), resourceModel (json), roleArn           [Cloud Control]
+	//   typeName (e.g. AWS::EC2::VPC), resourceModel (json), roleArn,
+	//     hydrate (bool, default true: GetResource each item for full props)  [Cloud Control]
 	//   resourceTypeFilters (csv, e.g. "ec2:vpc,ec2:subnet")                   [Tagging API]
 	// Comma-separated values are split by the handler.
 	// +optional

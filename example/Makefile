@@ -26,6 +26,8 @@ CTX := awsQuery={"region":"eu-central-1","imageParams":{"owners":"099720109477"}
 
 # Single source of truth: name|xr|composition|extra-args. Both `render` and
 # `commands` iterate over this, so the executed and printed commands never drift.
+# Every example renders with -rc: -r (function results) + -c (context), so the
+# context-target examples show their result and the rest are unaffected.
 define EXAMPLES
 regions|xr.yaml|composition.yaml|
 caller-identity|xr.yaml|composition-caller-identity.yaml|
@@ -61,11 +63,11 @@ commands:
 	@while IFS='|' read -r name xr comp extra; do \
 	  [ -z "$$name" ] && continue; \
 	  echo "# $$name"; \
-	  echo "crossplane render $$xr $$comp $(FUNCS) --function-credentials=$(CREDS) $$extra -r"; \
+	  echo "crossplane render $$xr $$comp $(FUNCS) --function-credentials=$(CREDS) $$extra -rc"; \
 	  echo; \
 	done <<< "$$EXAMPLES"
 	@echo "# irsa (needs real IRSA/Pod Identity + a valid assumeRoleChain role)"
-	@echo "crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -r"
+	@echo "crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -rc"
 
 render: build
 	@set -uo pipefail
@@ -82,7 +84,7 @@ render: build
 	fail=0
 	while IFS='|' read -r name xr comp extra; do
 	  [ -z "$$name" ] && continue
-	  if eval "crossplane render $$xr $$comp $(FUNCS) --function-credentials=$(CREDS) $$extra -r" >/tmp/render-$$name.out 2>&1; then
+	  if eval "crossplane render $$xr $$comp $(FUNCS) --function-credentials=$(CREDS) $$extra -rc" >/tmp/render-$$name.out 2>&1; then
 	    echo "PASS  $$name"
 	  else
 	    echo "FAIL  $$name"; tail -2 /tmp/render-$$name.out | sed 's/^/      /'; fail=1
@@ -101,7 +103,7 @@ render-irsa: build
 	FN_PID=$$!
 	trap 'kill $$FN_PID 2>/dev/null || true' EXIT
 	for i in $$(seq 1 40); do (exec 3<>/dev/tcp/127.0.0.1/$(PORT)) 2>/dev/null && break; sleep 0.25; done
-	crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -r
+	crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -rc
 
 clean:
 	rm -f $(BIN) /tmp/render-*.out /tmp/fn-render.log
