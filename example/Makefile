@@ -35,6 +35,7 @@ availability-zones|xr.yaml|composition-availability-zones.yaml|
 ami-lookup|xr.yaml|composition-ami-lookup.yaml|
 service-quotas|xr.yaml|composition-service-quotas.yaml|
 cloudcontrol-vpcs|xr.yaml|composition-cloudcontrol-vpcs.yaml|
+cloudcontrol-ids|xr.yaml|composition-cloudcontrol-ids.yaml|
 tagging-subnets|xr.yaml|composition-tagging-subnets.yaml|
 dynamic-refs|xr-dynamic.yaml|composition-dynamic-refs.yaml|
 dynamic-context|xr.yaml|composition-dynamic-context.yaml|--context-values='$(CTX)'

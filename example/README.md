@@ -49,6 +49,7 @@ status:
 | `composition-ami-lookup.yaml` | DescribeImages | EC2 | `status.amis` |
 | `composition-service-quotas.yaml` | ListServiceQuotas | Service Quotas | `status.ec2Quotas` |
 | `composition-cloudcontrol-vpcs.yaml` | ListResources | Cloud Control | `status.prodVpcs` |
+| `composition-cloudcontrol-ids.yaml` | ListResources (`hydrate=false`) | Cloud Control | `status.vpcIds` |
 | `composition-tagging-subnets.yaml` | GetResources | Resource Groups Tagging API | `context.subnets` |
 
 ```shell

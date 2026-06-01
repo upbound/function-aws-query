@@ -31,6 +31,22 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 | `ListResources` | AWS Cloud Control | `[{identifier, properties{…}}]` for any CloudFormation-modeled type; each resource is hydrated via `GetResource` for full attributes + tags (set `parameters.hydrate=false` for identifiers only). Filter client-side via `filters`. |
 | `GetResources` | Resource Groups Tagging API | `[{arn, tags{}}]` — server-side tag/type filtering |
 
+### Which one to use?
+
+- **`GetResources` (Tagging API)** — when you just need to **find resources by
+  tag** and the ARN/ID is enough. It's cheap: one IAM permission
+  (`tag:GetResources`), server-side tag filtering, one call across many services.
+  Caveats: returns only ARN + tags (no attributes), skips never-tagged resources,
+  and is eventually consistent.
+- **`ListResources` (Cloud Control)** — when you need the resource's **full
+  attributes** (CIDR, AZ, state, …), or want to enumerate **all** resources of a
+  type including untagged ones. Caveats: needs that type's read IAM permissions,
+  filters are applied client-side, and hydration costs one `GetResource` call per
+  resource (use `hydrate=false` to skip it when you only want identifiers).
+
+Rule of thumb: *IDs by tag →* `GetResources`; *attributes / full inventory of a
+type →* `ListResources`.
+
 ## Input reference
 
 ```yaml

@@ -1,0 +1,33 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-cloudcontrol-ids
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Identifiers-only listing via Cloud Control: hydrate=false skips the per-resource
+  # GetResource call, so each result carries just the primary identifier (e.g.
+  # {VpcId}). Faster and needs no per-type read perms, but tag/attribute filters
+  # won't match (there are no attributes to match against). Use this when you only
+  # need the IDs of every resource of a type.
+  - step: vpc-ids
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: ListResources
+      region: eu-central-1
+      parameters:
+        typeName: "AWS::EC2::VPC"
+        hydrate: "false"
+      target: status.vpcIds
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds
