@@ -485,6 +485,108 @@ func TestRunFunctionSkipContextTarget(t *testing.T) {
 	}
 }
 
+func TestToFilters(t *testing.T) {
+	t.Run("OK", func(t *testing.T) {
+		v := []any{
+			map[string]any{"name": "tag:Env", "values": []any{"prod", "dev"}},
+			map[string]any{"name": "state", "values": []any{"available"}},
+		}
+		got, err := toFilters(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []v1beta1.Filter{
+			{Name: "tag:Env", Values: []string{"prod", "dev"}},
+			{Name: "state", Values: []string{"available"}},
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+	t.Run("NotAList", func(t *testing.T) {
+		if _, err := toFilters(map[string]any{}); err == nil {
+			t.Error("expected error for non-list")
+		}
+	})
+	t.Run("MissingName", func(t *testing.T) {
+		if _, err := toFilters([]any{map[string]any{"values": []any{"x"}}}); err == nil {
+			t.Error("expected error for missing name")
+		}
+	})
+	t.Run("StringifiesValues", func(t *testing.T) {
+		got, err := toFilters([]any{map[string]any{"name": "n", "values": []any{float64(1), true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got[0].Values[0] != "1" || got[0].Values[1] != "true" {
+			t.Errorf("stringify failed: %v", got[0].Values)
+		}
+	})
+}
+
+func TestToParameters(t *testing.T) {
+	t.Run("OK", func(t *testing.T) {
+		got, err := toParameters(map[string]any{"serviceCode": "ec2", "n": float64(5)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["serviceCode"] != "ec2" || got["n"] != "5" {
+			t.Errorf("got %v", got)
+		}
+	})
+	t.Run("NotAMap", func(t *testing.T) {
+		if _, err := toParameters([]any{}); err == nil {
+			t.Error("expected error for non-map")
+		}
+	})
+}
+
+// TestRunFunctionResolvesRefs proves region/filters/parameters are resolved from
+// the XR spec (overriding static values) before the query runs.
+func TestRunFunctionResolvesRefs(t *testing.T) {
+	var seen *v1beta1.Input
+	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, in *v1beta1.Input) (any, error) {
+		seen = in
+		return []any{}, nil
+	}}}
+	req := &fnv1.RunFunctionRequest{
+		Meta: &fnv1.RequestMeta{Tag: "test"},
+		Input: resource.MustStructJSON(`{
+			"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
+			"queryType":"DescribeImages",
+			"regionRef":"spec.region",
+			"parameters":{"stale":"yes"},
+			"parametersRef":"spec.imageParams",
+			"filters":[{"name":"stale","values":["x"]}],
+			"filtersRef":"spec.imageFilters",
+			"target":"status.amis"
+		}`),
+		Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(`{
+			"apiVersion":"example.io/v1alpha1","kind":"XAccount","metadata":{"name":"x"},
+			"spec":{"region":"eu-central-1","imageParams":{"owners":"099720109477"},
+			"imageFilters":[{"name":"name","values":["ubuntu-*"]}]}
+		}`)}},
+	}
+	if _, err := f.RunFunction(context.Background(), req); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if seen == nil {
+		t.Fatal("awsQuery was not called")
+	}
+	if seen.Region == nil || *seen.Region != "eu-central-1" {
+		t.Errorf("regionRef not resolved: %v", seen.Region)
+	}
+	if seen.Parameters["owners"] != "099720109477" {
+		t.Errorf("parametersRef not resolved: %v", seen.Parameters)
+	}
+	if _, stale := seen.Parameters["stale"]; stale {
+		t.Error("parametersRef should override static parameters")
+	}
+	if len(seen.Filters) != 1 || seen.Filters[0].Name != "name" || len(seen.Filters[0].Values) != 1 || seen.Filters[0].Values[0] != "ubuntu-*" {
+		t.Errorf("filtersRef not resolved/override failed: %v", seen.Filters)
+	}
+}
+
 func TestRunFunctionIntervalSkip(t *testing.T) {
 	called := false
 	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, _ *v1beta1.Input) (any, error) {

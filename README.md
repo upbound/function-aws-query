@@ -21,7 +21,8 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 | `DescribeRegions` | `[{name, endpoint, optInStatus}]` |
 | `DescribeAvailabilityZones` | `[{name, zoneId, state, regionName, zoneType, groupName}]` |
 | `DescribeImages` | `[{imageId, name, ownerId, creationDate, architecture, state, rootDeviceType, description}]` |
-| `ListServiceQuotas` / `GetServiceQuota` | `[{quotaCode, quotaName, value, unit, adjustable, globalQuota}]` |
+| `ListServiceQuotas` | `[{quotaCode, quotaName, value, unit, adjustable, globalQuota}]` (all quotas for a `serviceCode`) |
+| `GetServiceQuota` | `{quotaCode, quotaName, value, unit, adjustable, globalQuota}` (a single quota; needs `serviceCode`+`quotaCode`) |
 
 **Existing-resource inventory** (generic, no Config/Resource-Explorer setup):
 
@@ -37,10 +38,10 @@ apiVersion: aws.fn.crossplane.io/v1beta1
 kind: Input
 queryType: <one of the above>          # required
 region: eu-central-1                    # or regionRef: spec.region (status./context./spec.)
-filters:                                # EC2 filter names | tag filters | client-side match
+filters:                                # or filtersRef: <path> (status./context./spec.)
 - name: "tag:Environment"
   values: ["prod"]
-parameters:                             # scalar args per queryType:
+parameters:                             # or parametersRef: <path>; scalar args per queryType:
   # allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
   # serviceCode, quotaCode                                                 [Service Quotas]
   # typeName, resourceModel, roleArn                                       [Cloud Control]
@@ -54,6 +55,11 @@ identity:                               # optional; defaults to Secret
   assumeRoleChain:
   - roleARN: arn:aws:iam::222222222222:role/crossplane-readonly
 ```
+
+**Dynamic queries:** `regionRef`, `filtersRef`, and `parametersRef` resolve their
+value from a `status.`/`context.`/`spec.` path at runtime (overriding the static
+field), so a prior pipeline step or the XR can drive the query — the AWS analog
+of azresourcegraph's `queryRef`/`subscriptionsRef`.
 
 ## Authentication
 
@@ -104,7 +110,7 @@ EOF
 # 2. Create the credentials Secret in your control plane's system namespace.
 #    It must match the secretRef in the composition (name + namespace). Reuse the
 #    same secret you already use for provider-aws, or create one from a file:
-kubectl -n upbound-system create secret generic aws-creds \
+kubectl -n crossplane-system create secret generic aws-creds \
   --from-file=credentials="$HOME/.aws/credentials"
 
 # 3. Apply the API definition, the composition, and an example resource.

@@ -28,5 +28,5 @@ spec:
     - name: aws-creds
       source: Secret
       secretRef:
-        namespace: upbound-system
+        namespace: crossplane-system
         name: aws-creds

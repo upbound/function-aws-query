@@ -114,12 +114,22 @@ func (in *Input) DeepCopyInto(out *Input) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.FiltersRef != nil {
+		in, out := &in.FiltersRef, &out.FiltersRef
+		*out = new(string)
+		**out = **in
+	}
 	if in.Parameters != nil {
 		in, out := &in.Parameters, &out.Parameters
 		*out = make(map[string]string, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}
+	}
+	if in.ParametersRef != nil {
+		in, out := &in.ParametersRef, &out.ParametersRef
+		*out = new(string)
+		**out = **in
 	}
 	if in.SkipQueryWhenTargetHasData != nil {
 		in, out := &in.SkipQueryWhenTargetHasData, &out.SkipQueryWhenTargetHasData

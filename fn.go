@@ -47,8 +47,15 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
 
-	// Resolve region from a reference if specified.
+	// Resolve region, filters, and parameters from references if specified
+	// (dynamic queries driven by spec/status/context).
 	if err := f.resolveRegionRef(req, in, rsp); err != nil {
+		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
+	}
+	if err := f.resolveFiltersRef(req, in, rsp); err != nil {
+		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
+	}
+	if err := f.resolveParametersRef(req, in, rsp); err != nil {
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
 
@@ -109,47 +116,139 @@ func getCreds(req *fnv1.RunFunctionRequest) map[string][]byte {
 	return out
 }
 
-// resolveRegionRef resolves Input.RegionRef from status./context./spec. into
-// Input.Region.
+// refRoot returns the root map and trimmed path for a status./context./spec.
+// reference, shared by all *Ref resolvers.
+func (f *Function) refRoot(req *fnv1.RunFunctionRequest, ref string) (map[string]any, string, error) {
+	switch {
+	case strings.HasPrefix(ref, "context."):
+		return req.GetContext().AsMap(), strings.TrimPrefix(ref, "context."), nil
+	case strings.HasPrefix(ref, "status."):
+		xrStatus, _, err := f.getXRAndStatus(req)
+		if err != nil {
+			return nil, "", err
+		}
+		return xrStatus, strings.TrimPrefix(ref, "status."), nil
+	case strings.HasPrefix(ref, "spec."):
+		oxr, err := request.GetObservedCompositeResource(req)
+		if err != nil {
+			return nil, "", errors.Wrap(err, "cannot get observed composite resource")
+		}
+		spec := map[string]any{}
+		_ = oxr.Resource.GetValueInto("spec", &spec)
+		return spec, strings.TrimPrefix(ref, "spec."), nil
+	}
+	return nil, "", errors.Errorf("unrecognized reference %q (must start with status., context., or spec.)", ref)
+}
+
+// resolveRegionRef resolves Input.RegionRef into Input.Region.
 func (f *Function) resolveRegionRef(req *fnv1.RunFunctionRequest, in *v1beta1.Input, rsp *fnv1.RunFunctionResponse) error {
 	if in.RegionRef == nil || *in.RegionRef == "" {
 		return nil
 	}
-	ref := *in.RegionRef
-
-	var root map[string]any
-	switch {
-	case strings.HasPrefix(ref, "context."):
-		root = req.GetContext().AsMap()
-		ref = strings.TrimPrefix(ref, "context.")
-	case strings.HasPrefix(ref, "status."):
-		xrStatus, _, err := f.getXRAndStatus(req)
-		if err != nil {
-			response.Fatal(rsp, err)
-			return err
-		}
-		root = xrStatus
-		ref = strings.TrimPrefix(ref, "status.")
-	case strings.HasPrefix(ref, "spec."):
-		oxr, err := request.GetObservedCompositeResource(req)
-		if err != nil {
-			response.Fatal(rsp, errors.Wrap(err, "cannot get observed composite resource"))
-			return err
-		}
-		spec := map[string]any{}
-		_ = oxr.Resource.GetValueInto("spec", &spec)
-		root = spec
-		ref = strings.TrimPrefix(ref, "spec.")
-	default:
-		err := errors.Errorf("Unrecognized RegionRef field: %s (must start with status., context., or spec.)", *in.RegionRef)
+	root, path, err := f.refRoot(req, *in.RegionRef)
+	if err != nil {
 		response.Fatal(rsp, err)
 		return err
 	}
-
-	if v, ok := GetNestedKey(root, ref); ok && v != "" {
+	if v, ok := GetNestedKey(root, path); ok && v != "" {
 		in.Region = &v
 	}
 	return nil
+}
+
+// resolveFiltersRef resolves Input.FiltersRef into Input.Filters (overriding any
+// static filters), enabling dynamic queries driven by a prior pipeline step.
+func (f *Function) resolveFiltersRef(req *fnv1.RunFunctionRequest, in *v1beta1.Input, rsp *fnv1.RunFunctionResponse) error {
+	if in.FiltersRef == nil || *in.FiltersRef == "" {
+		return nil
+	}
+	root, path, err := f.refRoot(req, *in.FiltersRef)
+	if err != nil {
+		response.Fatal(rsp, err)
+		return err
+	}
+	v, ok := GetNestedValue(root, path)
+	if !ok {
+		return nil
+	}
+	filters, err := toFilters(v)
+	if err != nil {
+		err = errors.Wrapf(err, "cannot resolve filtersRef %q", *in.FiltersRef)
+		response.Fatal(rsp, err)
+		return err
+	}
+	in.Filters = filters
+	return nil
+}
+
+// resolveParametersRef resolves Input.ParametersRef into Input.Parameters
+// (overriding any static parameters).
+func (f *Function) resolveParametersRef(req *fnv1.RunFunctionRequest, in *v1beta1.Input, rsp *fnv1.RunFunctionResponse) error {
+	if in.ParametersRef == nil || *in.ParametersRef == "" {
+		return nil
+	}
+	root, path, err := f.refRoot(req, *in.ParametersRef)
+	if err != nil {
+		response.Fatal(rsp, err)
+		return err
+	}
+	v, ok := GetNestedValue(root, path)
+	if !ok {
+		return nil
+	}
+	params, err := toParameters(v)
+	if err != nil {
+		err = errors.Wrapf(err, "cannot resolve parametersRef %q", *in.ParametersRef)
+		response.Fatal(rsp, err)
+		return err
+	}
+	in.Parameters = params
+	return nil
+}
+
+// toFilters converts a resolved reference value into a []v1beta1.Filter. The
+// value must be a list of objects, each with a "name" string and a "values" list.
+func toFilters(v any) ([]v1beta1.Filter, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, errors.New("expected a list of {name, values} objects")
+	}
+	out := make([]v1beta1.Filter, 0, len(list))
+	for i, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil, errors.Errorf("filter %d is not an object", i)
+		}
+		name, _ := m["name"].(string)
+		if name == "" {
+			return nil, errors.Errorf("filter %d is missing a string 'name'", i)
+		}
+		var values []string
+		if raw, ok := m["values"].([]any); ok {
+			for _, rv := range raw {
+				values = append(values, fmt.Sprintf("%v", rv))
+			}
+		}
+		out = append(out, v1beta1.Filter{Name: name, Values: values})
+	}
+	return out, nil
+}
+
+// toParameters converts a resolved reference value into a map[string]string.
+func toParameters(v any) (map[string]string, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("expected a string map")
+	}
+	out := make(map[string]string, len(m))
+	for k, val := range m {
+		if s, ok := val.(string); ok {
+			out[k] = s
+			continue
+		}
+		out[k] = fmt.Sprintf("%v", val)
+	}
+	return out, nil
 }
 
 // executeQuery runs the AWS query.
@@ -503,28 +602,35 @@ func ParseNestedKey(key string) ([]string, error) {
 	return parts, nil
 }
 
-// GetNestedKey retrieves a nested string value using dot/bracket notation.
-func GetNestedKey(root map[string]any, key string) (string, bool) {
+// GetNestedValue retrieves a nested value of any type using dot/bracket notation.
+func GetNestedValue(root map[string]any, key string) (any, bool) {
 	parts, err := ParseNestedKey(key)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
 	current := any(root)
 	for _, k := range parts {
 		m, ok := current.(map[string]any)
 		if !ok {
-			return "", false
+			return nil, false
 		}
 		next, exists := m[k]
 		if !exists {
-			return "", false
+			return nil, false
 		}
 		current = next
 	}
-	if s, ok := current.(string); ok {
-		return s, true
+	return current, true
+}
+
+// GetNestedKey retrieves a nested string value using dot/bracket notation.
+func GetNestedKey(root map[string]any, key string) (string, bool) {
+	v, ok := GetNestedValue(root, key)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	s, ok := v.(string)
+	return s, ok
 }
 
 // SetNestedKey sets value at a nested key, creating intermediate maps.

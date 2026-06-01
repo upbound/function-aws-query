@@ -35,14 +35,20 @@ type Input struct {
 	RegionRef *string `json:"regionRef,omitempty"`
 
 	// Filters are name/values pairs. Their interpretation depends on QueryType:
-	//   - EC2 ops (DescribeAvailabilityZones, DescribeImages): EC2 filter names
-	//     such as "tag:Name", "state", "architecture".
+	//   - EC2 ops (DescribeRegions, DescribeAvailabilityZones, DescribeImages):
+	//     EC2 filter names such as "tag:Name", "state", "architecture".
 	//   - GetResources (Tagging API): each entry is a tag filter where name is
 	//     the tag key and values are the tag values (server-side).
 	//   - ListResources (Cloud Control): client-side property match where name
 	//     is a top-level property or "tag:Key".
 	// +optional
 	Filters []Filter `json:"filters,omitempty"`
+
+	// FiltersRef resolves Filters from a status./context./spec. field path that
+	// holds a list of {name, values} objects — enabling dynamic queries driven
+	// by a prior pipeline step. Overrides Filters when set.
+	// +optional
+	FiltersRef *string `json:"filtersRef,omitempty"`
 
 	// Parameters carries scalar/string-list args specific to each QueryType:
 	//   allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
@@ -52,6 +58,11 @@ type Input struct {
 	// Comma-separated values are split by the handler.
 	// +optional
 	Parameters map[string]string `json:"parameters,omitempty"`
+
+	// ParametersRef resolves Parameters from a status./context./spec. field path
+	// that holds a string map. Overrides Parameters when set.
+	// +optional
+	ParametersRef *string `json:"parametersRef,omitempty"`
 
 	// Target where to store the query result. Must start with "status." or
 	// "context.". Supports dot and bracket notation for nested fields.

@@ -33,8 +33,8 @@ spec:
           filters:
             description: |-
               Filters are name/values pairs. Their interpretation depends on QueryType:
-                - EC2 ops (DescribeAvailabilityZones, DescribeImages): EC2 filter names
-                  such as "tag:Name", "state", "architecture".
+                - EC2 ops (DescribeRegions, DescribeAvailabilityZones, DescribeImages):
+                  EC2 filter names such as "tag:Name", "state", "architecture".
                 - GetResources (Tagging API): each entry is a tag filter where name is
                   the tag key and values are the tag values (server-side).
                 - ListResources (Cloud Control): client-side property match where name
@@ -59,6 +59,12 @@ spec:
               - values
               type: object
             type: array
+          filtersRef:
+            description: |-
+              FiltersRef resolves Filters from a status./context./spec. field path that
+              holds a list of {name, values} objects — enabling dynamic queries driven
+              by a prior pipeline step. Overrides Filters when set.
+            type: string
           identity:
             description: Identity selects the authentication mechanism. Defaults to
               Secret.
@@ -162,6 +168,11 @@ spec:
                 resourceTypeFilters (csv, e.g. "ec2:vpc,ec2:subnet")                   [Tagging API]
               Comma-separated values are split by the handler.
             type: object
+          parametersRef:
+            description: |-
+              ParametersRef resolves Parameters from a status./context./spec. field path
+              that holds a string map. Overrides Parameters when set.
+            type: string
           queryIntervalMinutes:
             description: |-
               QueryIntervalMinutes specifies the minimum interval between queries in

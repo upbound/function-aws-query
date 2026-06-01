@@ -1,29 +1,27 @@
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: function-aws-query-ami-lookup
+  name: function-aws-query-dynamic-refs
 spec:
   compositeTypeRef:
     apiVersion: example.io/v1alpha1
     kind: XAccount
   mode: Pipeline
   pipeline:
-  - step: ami-lookup
+  # Dynamic query: region, parameters, and filters all come from references
+  # (here the XR spec). The same regionRef/parametersRef/filtersRef fields also
+  # accept status.* (a prior step's output) and context.* (pipeline context),
+  # which is how you chain multi-step dynamic queries.
+  - step: ami-dynamic
     functionRef:
       name: function-aws-query
     input:
       apiVersion: aws.fn.crossplane.io/v1beta1
       kind: Input
       queryType: DescribeImages
-      region: eu-central-1
-      parameters:
-        # Canonical's AWS account ID.
-        owners: "099720109477"
-      filters:
-      - name: name
-        values: ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-      - name: state
-        values: ["available"]
+      regionRef: spec.region
+      parametersRef: spec.imageParams
+      filtersRef: spec.imageFilters
       target: status.amis
     credentials:
     - name: aws-creds

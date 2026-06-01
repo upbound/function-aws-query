@@ -1,0 +1,32 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-dynamic-context
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Dynamic query driven by the pipeline CONTEXT — the chaining mechanism. In a
+  # real pipeline a prior step (e.g. function-go-templating or function-python)
+  # writes these values to context; `crossplane render` seeds them here with
+  # --context-values. The same fields also resolve from status.* (a prior
+  # function-aws-query step's output) and spec.* (the XR).
+  - step: ami-from-context
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeImages
+      regionRef: context.awsQuery.region
+      parametersRef: context.awsQuery.imageParams
+      filtersRef: context.awsQuery.imageFilters
+      target: status.amis
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds
