@@ -107,6 +107,7 @@ existing AWS provider secret. The `Identity.source` selects the mechanism:
 | `IRSA` | none | Function pod ServiceAccount carries the role — see `deploymentruntimeconfig.yaml`. |
 | `PodIdentity` | none | EKS Pod Identity association for the function's ServiceAccount. |
 | `WebIdentity` | `secrets/web-identity-token.yaml` (OIDC token under `token`) | Explicit `roleARN` + token (Secret or filesystem). |
+| `Upbound` | none | On an Upbound control plane: AssumeRoleWithWebIdentity using the OIDC token Upbound injects at `/var/run/secrets/upbound.io/provider/token`. Set `identity.upbound.webIdentity.roleARN`. The function analog of the provider's `credentials.source: Upbound`. |
 
 An optional `identity.assumeRoleChain` assumes one or more roles on top of the
 base credentials (e.g. cross-account reads). See `composition-irsa.yaml`.

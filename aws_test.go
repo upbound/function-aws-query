@@ -254,6 +254,27 @@ func TestBuildAWSConfig(t *testing.T) {
 			t.Error("expected credentials provider to be set by the chain")
 		}
 	})
+
+	t.Run("UpboundRequiresRoleARN", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{Source: v1beta1.IdentitySourceUpbound}}
+		if _, err := buildAWSConfig(context.Background(), map[string][]byte{}, in); err == nil {
+			t.Error("expected error for missing upbound.webIdentity.roleARN")
+		}
+	})
+
+	t.Run("UpboundWires", func(t *testing.T) {
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{
+			Source:  v1beta1.IdentitySourceUpbound,
+			Upbound: &v1beta1.Upbound{WebIdentity: &v1beta1.UpboundWebIdentity{RoleARN: "arn:aws:iam::609897127049:role/solutions-e2e-provider-aws"}},
+		}}
+		cfg, err := buildAWSConfig(context.Background(), map[string][]byte{}, in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Credentials == nil {
+			t.Error("expected web identity credentials provider to be set for the Upbound source")
+		}
+	})
 }
 
 // --- resolveRegionRef -------------------------------------------------------

@@ -110,7 +110,30 @@ spec:
                 - IRSA
                 - WebIdentity
                 - PodIdentity
+                - Upbound
                 type: string
+              upbound:
+                description: |-
+                  Upbound configures the Upbound identity source. Required when Source is
+                  Upbound.
+                properties:
+                  webIdentity:
+                    description: |-
+                      WebIdentity is the role assumed with the Upbound-injected OIDC token.
+                      Required when Source is Upbound.
+                    properties:
+                      roleARN:
+                        description: RoleARN is the IAM role to assume with the Upbound
+                          OIDC token.
+                        type: string
+                      roleSessionName:
+                        description: RoleSessionName is an optional session name for
+                          the assumed role.
+                        type: string
+                    required:
+                    - roleARN
+                    type: object
+                type: object
               webIdentity:
                 description: |-
                   WebIdentity configures the AssumeRoleWithWebIdentity flow. Required when

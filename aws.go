@@ -34,6 +34,11 @@ import (
 // and an optional web identity token under key "token").
 const credentialsSecretName = "aws-creds"
 
+// upboundIdentityTokenFile is the path Upbound injects the workload's OIDC token
+// at, used by the Upbound identity source. Matches provider-upjet-aws's
+// dedicated Upbound token injection path.
+const upboundIdentityTokenFile = "/var/run/secrets/upbound.io/provider/token"
+
 // AWSQueryInterface is the mockable seam between RunFunction and the real AWS
 // calls. creds holds the decoded "aws-creds" credentials block: key
 // "credentials" (shared-credentials INI) and optional key "token" (WebIdentity).
@@ -122,13 +127,20 @@ func buildAWSConfig(ctx context.Context, creds map[string][]byte, in *v1beta1.In
 		if err != nil {
 			return aws.Config{}, err
 		}
-		provider := stscreds.NewWebIdentityRoleProvider(sts.NewFromConfig(base), webIdentity.RoleARN, retriever,
-			func(o *stscreds.WebIdentityRoleOptions) {
-				if webIdentity.RoleSessionName != "" {
-					o.RoleSessionName = webIdentity.RoleSessionName
-				}
-			})
-		opts = append(opts, config.WithCredentialsProvider(aws.NewCredentialsCache(provider)))
+		opts = append(opts, config.WithCredentialsProvider(webIdentityProvider(base, webIdentity.RoleARN, webIdentity.RoleSessionName, retriever)))
+	case v1beta1.IdentitySourceUpbound:
+		// AssumeRoleWithWebIdentity using the OIDC token Upbound injects into the
+		// workload pod at upboundIdentityTokenFile. Mirrors provider-upjet-aws's
+		// Upbound source: no secret, no static keys.
+		if in.Identity == nil || in.Identity.Upbound == nil || in.Identity.Upbound.WebIdentity == nil || in.Identity.Upbound.WebIdentity.RoleARN == "" {
+			return aws.Config{}, errors.New("identity.upbound.webIdentity.roleARN is required for the Upbound source")
+		}
+		base, err := config.LoadDefaultConfig(ctx, opts...)
+		if err != nil {
+			return aws.Config{}, errors.Wrap(err, "cannot load base AWS config for Upbound")
+		}
+		wi := in.Identity.Upbound.WebIdentity
+		opts = append(opts, config.WithCredentialsProvider(webIdentityProvider(base, wi.RoleARN, wi.RoleSessionName, stscreds.IdentityTokenFile(upboundIdentityTokenFile))))
 	default:
 		return aws.Config{}, errors.Errorf("unsupported identity source: %s", source)
 	}
@@ -155,6 +167,18 @@ func buildAWSConfig(ctx context.Context, creds map[string][]byte, in *v1beta1.In
 			}))
 	}
 	return cfg, nil
+}
+
+// webIdentityProvider builds a cached AssumeRoleWithWebIdentity credentials
+// provider from a base config, role ARN, and token retriever. Shared by the
+// WebIdentity and Upbound identity sources.
+func webIdentityProvider(base aws.Config, roleARN, sessionName string, retriever stscreds.IdentityTokenRetriever) aws.CredentialsProvider {
+	return aws.NewCredentialsCache(stscreds.NewWebIdentityRoleProvider(sts.NewFromConfig(base), roleARN, retriever,
+		func(o *stscreds.WebIdentityRoleOptions) {
+			if sessionName != "" {
+				o.RoleSessionName = sessionName
+			}
+		}))
 }
 
 // staticIdentityToken is an in-memory stscreds.IdentityTokenRetriever backed by

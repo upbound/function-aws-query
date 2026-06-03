@@ -97,7 +97,7 @@ type Filter struct {
 // the same Secret used for the AWS provider can be reused with this function.
 type Identity struct {
 	// Source of the base credentials.
-	// +kubebuilder:validation:Enum=Secret;IRSA;WebIdentity;PodIdentity
+	// +kubebuilder:validation:Enum=Secret;IRSA;WebIdentity;PodIdentity;Upbound
 	// +kubebuilder:default=Secret
 	// +optional
 	Source IdentitySource `json:"source,omitempty"`
@@ -107,6 +107,11 @@ type Identity struct {
 	// +optional
 	WebIdentity *WebIdentity `json:"webIdentity,omitempty"`
 
+	// Upbound configures the Upbound identity source. Required when Source is
+	// Upbound.
+	// +optional
+	Upbound *Upbound `json:"upbound,omitempty"`
+
 	// AssumeRoleChain assumes a chain of roles (in order) on top of the base
 	// credentials resolved from Source.
 	// +optional
@@ -114,7 +119,7 @@ type Identity struct {
 }
 
 // IdentitySource controls how base credentials are resolved.
-// Supported values: Secret;IRSA;WebIdentity;PodIdentity.
+// Supported values: Secret;IRSA;WebIdentity;PodIdentity;Upbound.
 type IdentitySource string
 
 const (
@@ -131,7 +136,34 @@ const (
 	// IdentitySourcePodIdentity uses EKS Pod Identity: credentials come from the
 	// container credentials endpoint via the SDK default chain. No secret.
 	IdentitySourcePodIdentity IdentitySource = "PodIdentity"
+	// IdentitySourceUpbound uses the OIDC token Upbound injects into the
+	// workload pod to AssumeRoleWithWebIdentity. Mirrors provider-upjet-aws's
+	// "Upbound" credential source: no secret, no static keys. The token is read
+	// from the dedicated Upbound injection path and exchanged for the role under
+	// identity.upbound.webIdentity.
+	IdentitySourceUpbound IdentitySource = "Upbound"
 )
+
+// Upbound configures the Upbound identity source: AssumeRoleWithWebIdentity
+// using the OIDC token Upbound injects into the workload pod. Mirrors
+// provider-upjet-aws spec.credentials.upbound.
+type Upbound struct {
+	// WebIdentity is the role assumed with the Upbound-injected OIDC token.
+	// Required when Source is Upbound.
+	// +optional
+	WebIdentity *UpboundWebIdentity `json:"webIdentity,omitempty"`
+}
+
+// UpboundWebIdentity configures the role assumed with the Upbound-injected
+// OIDC token.
+type UpboundWebIdentity struct {
+	// RoleARN is the IAM role to assume with the Upbound OIDC token.
+	RoleARN string `json:"roleARN"` //nolint:tagliatelle // mirrors provider-upjet-aws field name
+
+	// RoleSessionName is an optional session name for the assumed role.
+	// +optional
+	RoleSessionName string `json:"roleSessionName,omitempty"`
+}
 
 // WebIdentity configures the AssumeRoleWithWebIdentity flow.
 type WebIdentity struct {

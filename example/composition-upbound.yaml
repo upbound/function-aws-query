@@ -1,0 +1,31 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-upbound
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Upbound identity source: no credentials block and no static keys. On an
+  # Upbound control plane the function assumes the role below with the OIDC token
+  # Upbound injects into the workload pod (AssumeRoleWithWebIdentity). This is the
+  # function analog of provider-upjet-aws's `credentials.source: Upbound`.
+  #
+  # Control-plane only — `crossplane render` locally has no injected token, so
+  # this composition is not part of `make render`.
+  - step: available-regions
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeRegions
+      region: us-east-1
+      identity:
+        source: Upbound
+        upbound:
+          webIdentity:
+            roleARN: arn:aws:iam::609897127049:role/solutions-e2e-provider-aws
+      target: status.allAvailableRegions

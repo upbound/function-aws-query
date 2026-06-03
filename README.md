@@ -67,7 +67,7 @@ target: status.prodVpcs                 # required; status.* or context.*
 skipQueryWhenTargetHasData: true        # optional
 queryIntervalMinutes: 10                # optional throttle
 identity:                               # optional; defaults to Secret
-  source: Secret                        # Secret | IRSA | WebIdentity | PodIdentity
+  source: Secret                        # Secret | IRSA | WebIdentity | PodIdentity | Upbound
   assumeRoleChain:
   - roleARN: arn:aws:iam::222222222222:role/crossplane-readonly
 ```
@@ -82,9 +82,11 @@ of azresourcegraph's `queryRef`/`subscriptionsRef`.
 Mirrors `provider-upjet-aws` — the credentials Secret is a shared-credentials
 INI **byte-identical to the AWS provider's Secret source**, so existing secrets
 are reusable. Supported `identity.source` values: `Secret` (default), `IRSA`,
-`WebIdentity` (token via Secret or filesystem), `PodIdentity`, plus an
-`assumeRoleChain`. See [`example/README.md`](example/README.md) for the full
-matrix and a `DeploymentRuntimeConfig` for IRSA/PodIdentity.
+`WebIdentity` (token via Secret or filesystem), `PodIdentity`, `Upbound`
+(AssumeRoleWithWebIdentity using the OIDC token Upbound injects into the
+workload pod — the function analog of the provider's `credentials.source:
+Upbound`), plus an `assumeRoleChain`. See [`example/README.md`](example/README.md)
+for the full matrix and a `DeploymentRuntimeConfig` for IRSA/PodIdentity.
 
 ## Usage
 
