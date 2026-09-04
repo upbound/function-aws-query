@@ -21,7 +21,7 @@ type Input struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// QueryType selects the AWS read operation to perform.
-	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
+	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;DescribeEc2;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
 	QueryType string `json:"queryType"`
 
 	// Region to target. Optional for global-ish calls (GetCallerIdentity,
@@ -35,8 +35,9 @@ type Input struct {
 	RegionRef *string `json:"regionRef,omitempty"`
 
 	// Filters are name/values pairs. Their interpretation depends on QueryType:
-	//   - EC2 ops (DescribeRegions, DescribeAvailabilityZones, DescribeImages):
-	//     EC2 filter names such as "tag:Name", "state", "architecture".
+	//   - EC2 ops (DescribeRegions, DescribeAvailabilityZones, DescribeImages,
+	//     DescribeEc2): EC2 filter names such as "tag:Name", "state",
+	//     "architecture", "vpc-id", "group-id" (server-side).
 	//   - GetResources (Tagging API): each entry is a tag filter where name is
 	//     the tag key and values are the tag values (server-side).
 	//   - ListResources (Cloud Control): client-side property match where name
@@ -52,6 +53,9 @@ type Input struct {
 
 	// Parameters carries scalar/string-list args specific to each QueryType:
 	//   allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
+	//   operation: which EC2 describe to run - RouteTables (incl. their
+	//     associations, i.e. the main association ID), SecurityGroupRules,
+	//     Subnets. Required by DescribeEc2; bound by "filters"              [EC2]
 	//   serviceCode, quotaCode                                                 [ServiceQuotas]
 	//   typeName (e.g. AWS::EC2::VPC), resourceModel (json), roleArn,
 	//     hydrate (bool, default true: GetResource each item for full props)  [Cloud Control]

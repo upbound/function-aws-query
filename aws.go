@@ -57,6 +57,7 @@ func (q *AWSQuery) registry() map[string]handler {
 		"DescribeRegions":           q.describeRegions,
 		"DescribeAvailabilityZones": q.describeAvailabilityZones,
 		"DescribeImages":            q.describeImages,
+		"DescribeEc2":               q.describeEc2,
 		"ListServiceQuotas":         q.listServiceQuotas,
 		"GetServiceQuota":           q.getServiceQuota,
 		"ListResources":             q.listResources,
@@ -308,6 +309,162 @@ func (q *AWSQuery) describeImages(ctx context.Context, cfg aws.Config, in *v1bet
 	return res, nil
 }
 
+// describeEc2 runs one read-only EC2 Describe*, selected by
+// parameters.operation. Filters are server-side, so unlike ListResources it
+// never enumerates the account.
+func (q *AWSQuery) describeEc2(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+	if cfg.Region == "" {
+		return nil, errRegionRequired("DescribeEc2")
+	}
+	client := ec2.NewFromConfig(cfg)
+	switch op := in.Parameters["operation"]; op {
+	case "RouteTables":
+		return describeRouteTables(ctx, client, in)
+	case "SecurityGroupRules":
+		return describeSecurityGroupRules(ctx, client, in)
+	case "Subnets":
+		return describeSubnets(ctx, client, in)
+	default:
+		return nil, errors.Errorf("DescribeEc2 requires parameters.operation to be one of RouteTables, SecurityGroupRules, Subnets (got %q)", op)
+	}
+}
+
+// describeRouteTables lists route tables with their associations (EC2,
+// paginated). The main association ID is not in the CloudFormation schema.
+func describeRouteTables(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+	p := ec2.NewDescribeRouteTablesPaginator(client, &ec2.DescribeRouteTablesInput{Filters: toEC2Filters(in.Filters)})
+	res := []any{}
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "DescribeRouteTables failed")
+		}
+		for _, rt := range page.RouteTables {
+			res = append(res, map[string]any{
+				"routeTableId": aws.ToString(rt.RouteTableId),
+				"vpcId":        aws.ToString(rt.VpcId),
+				"ownerId":      aws.ToString(rt.OwnerId),
+				"associations": routeTableAssociations(rt.Associations),
+				"routes":       routeTableRoutes(rt.Routes),
+				"tags":         ec2TagsToMap(rt.Tags),
+			})
+		}
+	}
+	return res, nil
+}
+
+func routeTableAssociations(associations []ec2types.RouteTableAssociation) []any {
+	out := make([]any, 0, len(associations))
+	for _, a := range associations {
+		state := ""
+		if a.AssociationState != nil {
+			state = string(a.AssociationState.State)
+		}
+		out = append(out, map[string]any{
+			"routeTableAssociationId": aws.ToString(a.RouteTableAssociationId),
+			"routeTableId":            aws.ToString(a.RouteTableId),
+			"subnetId":                aws.ToString(a.SubnetId),
+			"gatewayId":               aws.ToString(a.GatewayId),
+			"main":                    aws.ToBool(a.Main),
+			"state":                   state,
+		})
+	}
+	return out
+}
+
+func routeTableRoutes(routes []ec2types.Route) []any {
+	out := make([]any, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, map[string]any{
+			// All three destination forms: aws_route's external name is
+			// {route_table_id}_{destination}, so omitting any of them makes that
+			// route unidentifiable.
+			"destinationCidrBlock":        aws.ToString(r.DestinationCidrBlock),
+			"destinationIpv6CidrBlock":    aws.ToString(r.DestinationIpv6CidrBlock),
+			"destinationPrefixListId":     aws.ToString(r.DestinationPrefixListId),
+			"carrierGatewayId":            aws.ToString(r.CarrierGatewayId),
+			"coreNetworkArn":              aws.ToString(r.CoreNetworkArn),
+			"egressOnlyInternetGatewayId": aws.ToString(r.EgressOnlyInternetGatewayId),
+			"gatewayId":                   aws.ToString(r.GatewayId),
+			"instanceId":                  aws.ToString(r.InstanceId),
+			"localGatewayId":              aws.ToString(r.LocalGatewayId),
+			"natGatewayId":                aws.ToString(r.NatGatewayId),
+			"networkInterfaceId":          aws.ToString(r.NetworkInterfaceId),
+			"transitGatewayId":            aws.ToString(r.TransitGatewayId),
+			"vpcPeeringConnectionId":      aws.ToString(r.VpcPeeringConnectionId),
+			"origin":                      string(r.Origin),
+			"state":                       string(r.State),
+		})
+	}
+	return out
+}
+
+// describeSecurityGroupRules lists security group rules (EC2, paginated).
+// Scope with a group-id filter.
+func describeSecurityGroupRules(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+	p := ec2.NewDescribeSecurityGroupRulesPaginator(client, &ec2.DescribeSecurityGroupRulesInput{Filters: toEC2Filters(in.Filters)})
+	res := []any{}
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "DescribeSecurityGroupRules failed")
+		}
+		for _, r := range page.SecurityGroupRules {
+			m := map[string]any{
+				"securityGroupRuleId":  aws.ToString(r.SecurityGroupRuleId),
+				"securityGroupRuleArn": aws.ToString(r.SecurityGroupRuleArn),
+				"groupId":              aws.ToString(r.GroupId),
+				"groupOwnerId":         aws.ToString(r.GroupOwnerId),
+				"isEgress":             aws.ToBool(r.IsEgress),
+				"ipProtocol":           aws.ToString(r.IpProtocol),
+				"cidrIpv4":             aws.ToString(r.CidrIpv4),
+				"cidrIpv6":             aws.ToString(r.CidrIpv6),
+				"prefixListId":         aws.ToString(r.PrefixListId),
+				"description":          aws.ToString(r.Description),
+				"tags":                 ec2TagsToMap(r.Tags),
+			}
+			if r.ReferencedGroupInfo != nil {
+				m["referencedGroupId"] = aws.ToString(r.ReferencedGroupInfo.GroupId)
+			}
+			putInt32(m, "fromPort", r.FromPort)
+			putInt32(m, "toPort", r.ToPort)
+			res = append(res, m)
+		}
+	}
+	return res, nil
+}
+
+// describeSubnets lists subnets (EC2, paginated). Returns only live subnets,
+// unlike the Tagging API.
+func describeSubnets(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+	p := ec2.NewDescribeSubnetsPaginator(client, &ec2.DescribeSubnetsInput{Filters: toEC2Filters(in.Filters)})
+	res := []any{}
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "DescribeSubnets failed")
+		}
+		for _, s := range page.Subnets {
+			m := map[string]any{
+				"subnetId":            aws.ToString(s.SubnetId),
+				"subnetArn":           aws.ToString(s.SubnetArn),
+				"vpcId":               aws.ToString(s.VpcId),
+				"ownerId":             aws.ToString(s.OwnerId),
+				"availabilityZone":    aws.ToString(s.AvailabilityZone),
+				"availabilityZoneId":  aws.ToString(s.AvailabilityZoneId),
+				"cidrBlock":           aws.ToString(s.CidrBlock),
+				"state":               string(s.State),
+				"defaultForAz":        aws.ToBool(s.DefaultForAz),
+				"mapPublicIpOnLaunch": aws.ToBool(s.MapPublicIpOnLaunch),
+				"tags":                ec2TagsToMap(s.Tags),
+			}
+			putInt32(m, "availableIpAddressCount", s.AvailableIpAddressCount)
+			res = append(res, m)
+		}
+	}
+	return res, nil
+}
+
 // listServiceQuotas lists quotas for a service (ServiceQuotas, paginated).
 func (q *AWSQuery) listServiceQuotas(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
 	if cfg.Region == "" {
@@ -540,6 +697,22 @@ func toEC2Filters(filters []v1beta1.Filter) []ec2types.Filter {
 		out = append(out, ec2types.Filter{Name: aws.String(f.Name), Values: f.Values})
 	}
 	return out
+}
+
+// ec2TagsToMap flattens EC2 tags, matching the shape getResources returns.
+func ec2TagsToMap(tags []ec2types.Tag) map[string]any {
+	out := map[string]any{}
+	for _, t := range tags {
+		out[aws.ToString(t.Key)] = aws.ToString(t.Value)
+	}
+	return out
+}
+
+// putInt32 sets key only when v is set, so an absent value is not a real zero.
+func putInt32(m map[string]any, key string, v *int32) {
+	if v != nil {
+		m[key] = int64(*v)
+	}
 }
 
 func toTagFilters(filters []v1beta1.Filter) []rgttypes.TagFilter {

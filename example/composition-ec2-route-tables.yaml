@@ -1,0 +1,33 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-ec2-route-tables
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Route tables for one VPC via EC2, with each table's associations. The main
+  # association ID is not in the AWS::EC2::RouteTable schema, so ListResources
+  # cannot substitute. The vpc-id filter is server-side.
+  - step: route-tables-by-vpc
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeEc2
+      region: eu-central-1
+      parameters:
+        operation: RouteTables
+      filters:
+      - name: vpc-id
+        values: ["vpc-0123456789abcdef0"]
+      target: status.routeTables
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds
