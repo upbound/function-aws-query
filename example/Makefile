@@ -37,6 +37,9 @@ service-quotas|xr.yaml|composition-service-quotas.yaml|
 cloudcontrol-vpcs|xr.yaml|composition-cloudcontrol-vpcs.yaml|
 cloudcontrol-ids|xr.yaml|composition-cloudcontrol-ids.yaml|
 tagging-subnets|xr.yaml|composition-tagging-subnets.yaml|
+ec2-route-tables|xr.yaml|composition-ec2-route-tables.yaml|
+ec2-subnets|xr.yaml|composition-ec2-subnets.yaml|
+ec2-security-group-rules|xr.yaml|composition-ec2-security-group-rules.yaml|
 dynamic-refs|xr-dynamic.yaml|composition-dynamic-refs.yaml|
 dynamic-context|xr.yaml|composition-dynamic-context.yaml|--context-values='$(CTX)'
 endef

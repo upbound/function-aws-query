@@ -1,0 +1,35 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-ec2-security-group-rules
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Rules of one security group via EC2.
+  #
+  # Note the filter name. This operation accepts only group-id,
+  # security-group-rule-id and tag:<key> - NOT vpc-id, which the other two EC2
+  # describes do accept. An unrecognised filter name is fatal and aborts the
+  # whole composition, so the filters are not interchangeable between these
+  # query types.
+  - step: rules-by-group
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeSecurityGroupRules
+      region: eu-central-1
+      filters:
+      - name: group-id
+        values: ["sg-0123456789abcdef0"]
+      target: status.securityGroupRules
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds

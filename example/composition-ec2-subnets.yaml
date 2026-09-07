@@ -1,0 +1,31 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-ec2-subnets
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # Subnets for one VPC via EC2. Unlike the Tagging API this returns only live
+  # subnets, so a deleted subnet cannot shadow its live replacement under the
+  # same tag. The vpc-id filter is server-side and required.
+  - step: subnets-by-vpc
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeSubnets
+      region: eu-central-1
+      filters:
+      - name: vpc-id
+        values: ["vpc-0123456789abcdef0"]
+      target: status.subnets
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds

@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	sqtypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
 	"github.com/google/go-cmp/cmp"
 	"github.com/upbound/function-aws-query/input/v1beta1"
@@ -28,9 +29,19 @@ type respStub struct {
 	bodies      []string
 	contentType string
 	calls       int
+	// requests records each marshalled request body, so a test can assert what
+	// was actually sent (e.g. that a filter went server-side).
+	requests []string
 }
 
-func (s *respStub) Do(_ *http.Request) (*http.Response, error) {
+func (s *respStub) Do(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		sent, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		s.requests = append(s.requests, string(sent))
+	}
 	body := s.bodies[s.calls]
 	if s.calls < len(s.bodies)-1 {
 		s.calls++
@@ -315,16 +326,22 @@ func TestHandlerValidationGuards(t *testing.T) {
 	noRegion := aws.Config{} // empty region triggers the region-required guard
 
 	cases := map[string]func() (any, error){
-		"AZsNoRegion":       func() (any, error) { return q.describeAvailabilityZones(ctx, noRegion, &v1beta1.Input{}) },
-		"ImagesNoRegion":    func() (any, error) { return q.describeImages(ctx, noRegion, &v1beta1.Input{}) },
-		"QuotasNoRegion":    func() (any, error) { return q.listServiceQuotas(ctx, noRegion, &v1beta1.Input{}) },
-		"GetQuotaNoRegion":  func() (any, error) { return q.getServiceQuota(ctx, noRegion, &v1beta1.Input{}) },
-		"ListResNoRegion":   func() (any, error) { return q.listResources(ctx, noRegion, &v1beta1.Input{}) },
-		"GetResNoRegion":    func() (any, error) { return q.getResources(ctx, noRegion, &v1beta1.Input{}) },
-		"ImagesNoFilter":    func() (any, error) { return q.describeImages(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"QuotasNoService":   func() (any, error) { return q.listServiceQuotas(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"GetQuotaNoCodes":   func() (any, error) { return q.getServiceQuota(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"ListResNoTypeName": func() (any, error) { return q.listResources(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"AZsNoRegion":         func() (any, error) { return q.describeAvailabilityZones(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoRegion":      func() (any, error) { return q.describeImages(ctx, noRegion, &v1beta1.Input{}) },
+		"QuotasNoRegion":      func() (any, error) { return q.listServiceQuotas(ctx, noRegion, &v1beta1.Input{}) },
+		"GetQuotaNoRegion":    func() (any, error) { return q.getServiceQuota(ctx, noRegion, &v1beta1.Input{}) },
+		"ListResNoRegion":     func() (any, error) { return q.listResources(ctx, noRegion, &v1beta1.Input{}) },
+		"GetResNoRegion":      func() (any, error) { return q.getResources(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoFilter":      func() (any, error) { return q.describeImages(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"QuotasNoService":     func() (any, error) { return q.listServiceQuotas(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"GetQuotaNoCodes":     func() (any, error) { return q.getServiceQuota(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"ListResNoTypeName":   func() (any, error) { return q.listResources(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"RouteTablesNoRegion": func() (any, error) { return q.describeRouteTables(ctx, noRegion, &v1beta1.Input{}) },
+		"SubnetsNoRegion":     func() (any, error) { return q.describeSubnets(ctx, noRegion, &v1beta1.Input{}) },
+		"SGRulesNoRegion":     func() (any, error) { return q.describeSecurityGroupRules(ctx, noRegion, &v1beta1.Input{}) },
+		"SubnetsNoFilters": func() (any, error) {
+			return q.describeSubnets(ctx, stubCfg(&respStub{}), &v1beta1.Input{})
+		},
 	}
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -469,6 +486,262 @@ func TestDescribeImages(t *testing.T) {
 		"state": "available", "rootDeviceType": "ebs", "description": "desc",
 	}}
 	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+// --- Direct EC2 describes ---------------------------------------------------
+
+const (
+	routeTablesPage1 = `<DescribeRouteTablesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<routeTableSet><item><routeTableId>rtb-1</routeTableId><vpcId>vpc-1</vpcId><ownerId>123456789012</ownerId>` +
+		`<associationSet><item><routeTableAssociationId>rtbassoc-main</routeTableAssociationId><routeTableId>rtb-1</routeTableId>` +
+		`<main>true</main><associationState><state>associated</state></associationState></item></associationSet>` +
+		`<routeSet><item><destinationCidrBlock>10.0.0.0/16</destinationCidrBlock><gatewayId>local</gatewayId>` +
+		`<origin>CreateRouteTable</origin><state>active</state></item></routeSet>` +
+		`<tagSet><item><key>Name</key><value>main</value></item></tagSet></item></routeTableSet>` +
+		`<nextToken>tok</nextToken></DescribeRouteTablesResponse>`
+
+	routeTablesPage2 = `<DescribeRouteTablesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<routeTableSet><item><routeTableId>rtb-2</routeTableId><vpcId>vpc-1</vpcId><ownerId>123456789012</ownerId>` +
+		`<associationSet><item><routeTableAssociationId>rtbassoc-2</routeTableAssociationId><routeTableId>rtb-2</routeTableId>` +
+		`<subnetId>subnet-1</subnetId><main>false</main><associationState><state>associated</state></associationState>` +
+		`</item></associationSet><routeSet/><tagSet/></item></routeTableSet></DescribeRouteTablesResponse>`
+
+	subnetsBody = `<DescribeSubnetsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<subnetSet><item><subnetId>subnet-1</subnetId>` +
+		`<subnetArn>arn:aws:ec2:eu-central-1:123456789012:subnet/subnet-1</subnetArn>` +
+		`<vpcId>vpc-1</vpcId><ownerId>123456789012</ownerId><availabilityZone>eu-central-1a</availabilityZone>` +
+		`<availabilityZoneId>euc1-az2</availabilityZoneId><cidrBlock>10.0.1.0/24</cidrBlock><state>available</state>` +
+		`<defaultForAz>false</defaultForAz><mapPublicIpOnLaunch>true</mapPublicIpOnLaunch>` +
+		`<availableIpAddressCount>250</availableIpAddressCount>` +
+		`<tagSet><item><key>Name</key><value>public-a</value></item></tagSet></item></subnetSet></DescribeSubnetsResponse>`
+
+	securityGroupRulesBody = `<DescribeSecurityGroupRulesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<securityGroupRuleSet><item><securityGroupRuleId>sgr-1</securityGroupRuleId><groupId>sg-1</groupId>` +
+		`<securityGroupRuleArn>arn:aws:ec2:eu-central-1:123456789012:security-group-rule/sgr-1</securityGroupRuleArn>` +
+		`<groupOwnerId>123456789012</groupOwnerId><isEgress>false</isEgress><ipProtocol>tcp</ipProtocol>` +
+		`<fromPort>443</fromPort><toPort>443</toPort><cidrIpv4>0.0.0.0/0</cidrIpv4><description>https</description>` +
+		`<tagSet><item><key>Name</key><value>ingress</value></item></tagSet></item>` +
+		`<item><securityGroupRuleId>sgr-2</securityGroupRuleId><groupId>sg-1</groupId><groupOwnerId>123456789012</groupOwnerId>` +
+		`<isEgress>true</isEgress><ipProtocol>-1</ipProtocol><fromPort>-1</fromPort><toPort>-1</toPort>` +
+		`<referencedGroupInfo><groupId>sg-2</groupId></referencedGroupInfo></item>` +
+		`<item><securityGroupRuleId>sgr-3</securityGroupRuleId><groupId>sg-1</groupId><groupOwnerId>123456789012</groupOwnerId>` +
+		`<isEgress>false</isEgress><ipProtocol>icmp</ipProtocol><prefixListId>pl-1</prefixListId>` +
+		`</item></securityGroupRuleSet></DescribeSecurityGroupRulesResponse>`
+)
+
+// ec2Input builds an input for one query type with a filter that query type
+// actually supports. This is not cosmetic: DescribeSecurityGroupRules accepts
+// only group-id, security-group-rule-id and tag:<key>, and an unrecognised
+// filter NAME is fatal - so a shared "vpc-id" would put a request on the wire
+// that AWS rejects, while respStub's canned body made the suite pass anyway.
+func ec2Input(queryType string) *v1beta1.Input {
+	name, value := "vpc-id", "vpc-1"
+	if queryType == "DescribeSecurityGroupRules" {
+		name, value = "group-id", "sg-1"
+	}
+	return &v1beta1.Input{Filters: []v1beta1.Filter{{Name: name, Values: []string{value}}}}
+}
+
+// TestEc2Dispatches proves each direct EC2 describe is registered under
+// its own queryType and reaches its own describe call. An unsupported value no
+// longer needs a runtime case: queryType is CRD-enum validated, so a typo is
+// rejected at admission instead of aborting a composition at reconcile.
+func TestEc2Dispatches(t *testing.T) {
+	cases := map[string]string{
+		"DescribeRouteTables":        routeTablesPage2,
+		"DescribeSubnets":            subnetsBody,
+		"DescribeSecurityGroupRules": securityGroupRulesBody,
+	}
+	for queryType, body := range cases {
+		t.Run(queryType, func(t *testing.T) {
+			h := newQuery().registry()[queryType]
+			if h == nil {
+				t.Fatalf("%s is not wired into the handler registry", queryType)
+			}
+			got, err := h(context.Background(),
+				stubCfg(&respStub{bodies: []string{body}, contentType: "text/xml"}), ec2Input(queryType))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			list, ok := got.([]any)
+			if !ok || len(list) == 0 {
+				t.Fatalf("expected a non-empty list, got %#v", got)
+			}
+		})
+	}
+}
+
+// TestEc2FilterGuard pins the must-filter guard. These calls are
+// paginated and unbounded, so an empty filter set would page a whole region
+// into XR status. It is reachable without a typo: toFilters returns a non-nil
+// empty slice, so a filtersRef resolving to [] arrives with len 0.
+func TestEc2FilterGuard(t *testing.T) {
+	for _, queryType := range []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroupRules"} {
+		t.Run(queryType, func(t *testing.T) {
+			h := newQuery().registry()[queryType]
+			_, err := h(context.Background(), stubCfg(&respStub{}), &v1beta1.Input{})
+			if err == nil {
+				t.Fatal("expected the filter guard to reject an empty filter set")
+			}
+			if !strings.Contains(err.Error(), "requires filters") {
+				t.Errorf("expected the filter guard, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestEc2RouteTablesPaginates covers the projection (associations, incl.
+// the main association ID) across two pages.
+func TestEc2RouteTablesPaginates(t *testing.T) {
+	stub := &respStub{bodies: []string{routeTablesPage1, routeTablesPage2}, contentType: "text/xml"}
+	got, err := newQuery().describeRouteTables(context.Background(), stubCfg(stub), ec2Input("DescribeRouteTables"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{
+		map[string]any{
+			"routeTableId": "rtb-1", "vpcId": "vpc-1", "ownerId": "123456789012",
+			"associations": []any{map[string]any{
+				"routeTableAssociationId": "rtbassoc-main", "routeTableId": "rtb-1",
+				"subnetId": "", "gatewayId": "", "main": true, "state": "associated",
+			}},
+			"routes": []any{map[string]any{
+				"destinationCidrBlock": "10.0.0.0/16", "destinationIpv6CidrBlock": "",
+				"destinationPrefixListId": "", "carrierGatewayId": "", "coreNetworkArn": "",
+				"egressOnlyInternetGatewayId": "", "gatewayId": "local", "instanceId": "",
+				"localGatewayId": "", "natGatewayId": "", "networkInterfaceId": "",
+				"transitGatewayId": "", "vpcPeeringConnectionId": "",
+				"origin": "CreateRouteTable", "state": "active",
+			}},
+			"tags": map[string]any{"Name": "main"},
+		},
+		map[string]any{
+			"routeTableId": "rtb-2", "vpcId": "vpc-1", "ownerId": "123456789012",
+			"associations": []any{map[string]any{
+				"routeTableAssociationId": "rtbassoc-2", "routeTableId": "rtb-2",
+				"subnetId": "subnet-1", "gatewayId": "", "main": false, "state": "associated",
+			}},
+			"routes": []any{},
+			"tags":   map[string]any{},
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) != 2 {
+		t.Fatalf("expected 2 requests (one per page), got %d", len(stub.requests))
+	}
+	// vpc-id must go server-side - that is the whole point over ListResources.
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
+	}
+	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
+		t.Errorf("vpc-id filter not sent server-side: %s", stub.requests[0])
+	}
+}
+
+// Isolates the region guard: the shared guards table only asserts err != nil,
+// which the SDK's endpoint-resolution error satisfies on its own.
+func TestEc2RegionGuard(t *testing.T) {
+	_, err := newQuery().describeSubnets(context.Background(), aws.Config{}, ec2Input("DescribeSubnets"))
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires a region") {
+		t.Errorf("expected the region guard, got: %v", err)
+	}
+}
+
+func TestEc2Subnets(t *testing.T) {
+	stub := &respStub{bodies: []string{subnetsBody}, contentType: "text/xml"}
+	got, err := newQuery().describeSubnets(context.Background(), stubCfg(stub), ec2Input("DescribeSubnets"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{map[string]any{
+		"subnetId": "subnet-1", "subnetArn": "arn:aws:ec2:eu-central-1:123456789012:subnet/subnet-1",
+		"vpcId": "vpc-1", "ownerId": "123456789012", "availabilityZone": "eu-central-1a",
+		"availabilityZoneId": "euc1-az2", "cidrBlock": "10.0.1.0/24", "state": "available",
+		"defaultForAz": false, "mapPublicIpOnLaunch": true, "availableIpAddressCount": int64(250),
+		// Always projected, so an IPv6-only subnet is distinguishable from a
+		// projection failure. This fixture is IPv4-only, hence the empty set.
+		"ipv6Native": false, "ipv6CidrBlockAssociationSet": []any{},
+		"tags": map[string]any{"Name": "public-a"},
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
+	}
+	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
+		t.Errorf("filter not sent server-side: %s", stub.requests[0])
+	}
+}
+
+// Optional keys: referencedGroupId only for group references, ports only when
+// on the wire - a live all-protocol rule reports -1/-1, not nothing.
+func TestEc2SecurityGroupRules(t *testing.T) {
+	stub := &respStub{bodies: []string{securityGroupRulesBody}, contentType: "text/xml"}
+	got, err := newQuery().describeSecurityGroupRules(context.Background(), stubCfg(stub), ec2Input("DescribeSecurityGroupRules"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{
+		map[string]any{
+			"securityGroupRuleId":  "sgr-1",
+			"securityGroupRuleArn": "arn:aws:ec2:eu-central-1:123456789012:security-group-rule/sgr-1",
+			"groupId":              "sg-1", "groupOwnerId": "123456789012",
+			"isEgress": false, "ipProtocol": "tcp", "fromPort": int64(443), "toPort": int64(443),
+			"cidrIpv4": "0.0.0.0/0", "cidrIpv6": "", "prefixListId": "", "description": "https",
+			"tags": map[string]any{"Name": "ingress"},
+		},
+		map[string]any{
+			"securityGroupRuleId": "sgr-2", "securityGroupRuleArn": "",
+			"groupId": "sg-1", "groupOwnerId": "123456789012",
+			"isEgress": true, "ipProtocol": "-1", "fromPort": int64(-1), "toPort": int64(-1),
+			"cidrIpv4": "", "cidrIpv6": "",
+			"prefixListId": "", "description": "", "referencedGroupId": "sg-2",
+			// Kept alongside the id so a cross-account reference is not
+			// mistaken for a local group. Empty in this fixture.
+			"referencedGroupUserId": "", "referencedGroupVpcId": "",
+			"tags": map[string]any{},
+		},
+		map[string]any{
+			"securityGroupRuleId": "sgr-3", "securityGroupRuleArn": "",
+			"groupId": "sg-1", "groupOwnerId": "123456789012",
+			"isEgress": false, "ipProtocol": "icmp", "cidrIpv4": "", "cidrIpv6": "",
+			"prefixListId": "pl-1", "description": "", "tags": map[string]any{},
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
+	}
+	if !strings.Contains(stub.requests[0], "Filter.1.Name=group-id") {
+		t.Errorf("filter not sent server-side: %s", stub.requests[0])
+	}
+}
+
+func TestEc2TagsToMap(t *testing.T) {
+	got := ec2TagsToMap([]ec2types.Tag{{Key: aws.String("Name"), Value: aws.String("x")}})
+	if diff := cmp.Diff(map[string]any{"Name": "x"}, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+	if diff := cmp.Diff(map[string]any{}, ec2TagsToMap(nil)); diff != "" {
+		t.Errorf("ec2TagsToMap(nil) should be an empty map:\n%s", diff)
+	}
+}
+
+func TestPutInt32(t *testing.T) {
+	m := map[string]any{}
+	putInt32(m, "set", aws.Int32(7))
+	putInt32(m, "unset", nil)
+	if diff := cmp.Diff(map[string]any{"set": int64(7)}, m); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
 	}
 }
