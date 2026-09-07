@@ -21,7 +21,7 @@ type Input struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// QueryType selects the AWS read operation to perform.
-	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;DescribeEc2;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
+	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;DescribeRouteTables;DescribeSubnets;DescribeSecurityGroupRules;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
 	QueryType string `json:"queryType"`
 
 	// Region to target. Optional for global-ish calls (GetCallerIdentity,
@@ -34,10 +34,19 @@ type Input struct {
 	// +optional
 	RegionRef *string `json:"regionRef,omitempty"`
 
-	// Filters are name/values pairs. Their interpretation depends on QueryType:
-	//   - EC2 ops (DescribeRegions, DescribeAvailabilityZones, DescribeImages,
-	//     DescribeEc2): EC2 filter names such as "tag:Name", "state",
-	//     "architecture", "vpc-id", "group-id" (server-side).
+	// Filters are name/values pairs. Their interpretation depends on QueryType.
+	// For every EC2 query these are native EC2 filter names, applied
+	// server-side, and an unrecognised NAME is fatal - so they are listed per
+	// query type rather than generically. They are NOT interchangeable:
+	//   - DescribeRegions, DescribeAvailabilityZones, DescribeImages:
+	//     "tag:Name", "state", "architecture", ...
+	//   - DescribeRouteTables (required): "vpc-id", "route-table-id",
+	//     "association.subnet-id", "tag:<key>", ...
+	//   - DescribeSubnets (required): "vpc-id", "subnet-id",
+	//     "availability-zone", "tag:<key>", ...
+	//   - DescribeSecurityGroupRules (required): "group-id",
+	//     "security-group-rule-id", "tag:<key>". This operation does NOT
+	//     accept "vpc-id".
 	//   - GetResources (Tagging API): each entry is a tag filter where name is
 	//     the tag key and values are the tag values (server-side).
 	//   - ListResources (Cloud Control): client-side property match where name
@@ -53,9 +62,6 @@ type Input struct {
 
 	// Parameters carries scalar/string-list args specific to each QueryType:
 	//   allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
-	//   operation: which EC2 describe to run - RouteTables (incl. their
-	//     associations, i.e. the main association ID), SecurityGroupRules,
-	//     Subnets. Required by DescribeEc2; bound by "filters"              [EC2]
 	//   serviceCode, quotaCode                                                 [ServiceQuotas]
 	//   typeName (e.g. AWS::EC2::VPC), resourceModel (json), roleArn,
 	//     hydrate (bool, default true: GetResource each item for full props)  [Cloud Control]

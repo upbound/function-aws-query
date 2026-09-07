@@ -15,7 +15,7 @@ metadata:
       queries (caller identity, regions, availability zones, AMI lookups, service
       quotas) and generic existing-resource discovery (AWS Cloud Control
       ListResources, the Resource Groups Tagging API GetResources, and direct
-      EC2 describes via DescribeEc2).
+      EC2 describes for route tables, subnets and security group rules).
 
       Authentication mirrors the Official AWS Provider: the credentials secret is
       a shared-credentials INI compatible with provider-upjet-aws, and the

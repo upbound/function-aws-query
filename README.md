@@ -21,7 +21,9 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 | `DescribeRegions` | `[{name, endpoint, optInStatus}]` |
 | `DescribeAvailabilityZones` | `[{name, zoneId, state, regionName, zoneType, groupName}]` |
 | `DescribeImages` | `[{imageId, name, ownerId, creationDate, architecture, state, rootDeviceType, description}]` |
-| `DescribeEc2` | Read-only EC2 `Describe*` selected by `parameters.operation` (case-sensitive), for identifiers Cloud Control does not model or where the Tagging API is not authoritative. `RouteTables` -> `[{routeTableId, vpcId, ownerId, associations[{routeTableAssociationId, routeTableId, subnetId, gatewayId, main, state}], routes[{destinationCidrBlock, destinationIpv6CidrBlock, destinationPrefixListId, gatewayId, natGatewayId, transitGatewayId, vpcPeeringConnectionId, egressOnlyInternetGatewayId, carrierGatewayId, localGatewayId, coreNetworkArn, instanceId, networkInterfaceId, origin, state}], tags{}}]`. `Subnets` -> `[{subnetId, subnetArn, vpcId, ownerId, availabilityZone, availabilityZoneId, cidrBlock, state, defaultForAz, mapPublicIpOnLaunch, availableIpAddressCount, tags{}}]`. `SecurityGroupRules` -> `[{securityGroupRuleId, securityGroupRuleArn, groupId, groupOwnerId, isEgress, ipProtocol, fromPort, toPort, cidrIpv4, cidrIpv6, prefixListId, referencedGroupId, description, tags{}}]`. Server-side `filters` (native EC2 names). |
+| `DescribeRouteTables` | `[{routeTableId, vpcId, ownerId, associations[{routeTableAssociationId, routeTableId, subnetId, gatewayId, main, state}], routes[{destinationCidrBlock, destinationIpv6CidrBlock, destinationPrefixListId, gatewayId, natGatewayId, transitGatewayId, vpcPeeringConnectionId, egressOnlyInternetGatewayId, carrierGatewayId, localGatewayId, coreNetworkArn, instanceId, networkInterfaceId, origin, state}], tags{}}]`. Carries the **main association ID**, which no CloudFormation schema models. `filters` **required**: `vpc-id`, `route-table-id`, `association.subnet-id`, `tag:<key>`. |
+| `DescribeSubnets` | `[{subnetId, subnetArn, vpcId, ownerId, availabilityZone, availabilityZoneId, cidrBlock, state, defaultForAz, mapPublicIpOnLaunch, availableIpAddressCount, ipv6Native, ipv6CidrBlockAssociationSet[{associationId, ipv6CidrBlock, state}], tags{}}]`. Returns only **live** subnets, unlike the Tagging API. `filters` **required**: `vpc-id`, `subnet-id`, `availability-zone`, `tag:<key>`. |
+| `DescribeSecurityGroupRules` | `[{securityGroupRuleId, securityGroupRuleArn, groupId, groupOwnerId, isEgress, ipProtocol, fromPort, toPort, cidrIpv4, cidrIpv6, prefixListId, referencedGroupId, referencedGroupUserId, referencedGroupVpcId, description, tags{}}]`. `filters` **required**: `group-id`, `security-group-rule-id`, `tag:<key>` - this operation does **not** accept `vpc-id`. |
 | `ListServiceQuotas` | `[{quotaCode, quotaName, value, unit, adjustable, globalQuota}]` (all quotas for a `serviceCode`) |
 | `GetServiceQuota` | `{quotaCode, quotaName, value, unit, adjustable, globalQuota}` (a single quota; needs `serviceCode`+`quotaCode`) |
 
@@ -44,13 +46,18 @@ result is written to `target` (`status.<field>` or `context.<field>`).
   type including untagged ones. Caveats: needs that type's read IAM permissions,
   filters are applied client-side, and hydration costs one `GetResource` call per
   resource (use `hydrate=false` to skip it when you only want identifiers).
-- **`DescribeEc2`** - when the identifier you need is not in the resource's
-  CloudFormation schema (a route table's **main association ID** is the
-  canonical case), or when you need an **authoritative** answer. It reads only
-  what the `filters` select, server-side, so a foreign resource cannot fail the
-  query. Always filter (`vpc-id`, `group-id`): unfiltered, these are region-wide
-  reads. Filter *values* are not validated - an id that does not exist yields
-  an empty result, not an error - but an unrecognised filter *name* is fatal. Both alternatives can mislead here:
+- **`DescribeRouteTables` / `DescribeSubnets` / `DescribeSecurityGroupRules`** -
+  when the identifier you need is not in the resource's CloudFormation schema (a
+  route table's **main association ID** is the canonical case), or when you need
+  an **authoritative** answer. Needs `ec2:DescribeRouteTables`,
+  `ec2:DescribeSubnets` and `ec2:DescribeSecurityGroupRules` respectively;
+  without them the call fails at reconcile with `UnauthorizedOperation`. It
+  reads only what the `filters` select, server-side, so a foreign resource cannot
+  fail the query. `filters` are **required**, and the accepted names differ per
+  query type (see the table above); unfiltered these would be region-wide reads.
+  Filter *values* are not validated - an id that does not exist yields an empty
+  result, not an error - but an unrecognised filter *name* is fatal. Both
+  alternatives can mislead here:
   Cloud Control's `ListResources` walks every resource of the type account-wide
   and aborts the whole composition if any one of them fails to hydrate, and the
   Tagging API can keep reporting deleted resources for a while - which, if they
@@ -59,7 +66,17 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 
 Rule of thumb: *IDs by tag →* `GetResources`; *attributes / full inventory of a
 type →* `ListResources`; *EC2 identifiers CloudFormation does not model, or an
-authoritative VPC-scoped read →* `DescribeEc2`.
+authoritative VPC-scoped read →* the direct `Describe*` query types.
+
+On absent values, the direct EC2 describes take two deliberate policies. Fields
+AWS always returns are projected with their zero value (`isEgress: false`,
+`main: false`, `cidrBlock: ""`). Fields that are genuinely optional are
+**omitted** rather than faked: `fromPort`/`toPort` are absent on a rule that has
+no ports, and `referencedGroup*` only appears on a group-referencing rule.
+Omitting is the honest choice - `fromPort: 0` is a real port - so guard in
+templates (`{{ if .fromPort }}`) rather than assuming the key exists. Note real
+EC2 does send `fromPort: -1, toPort: -1` for an all-protocol rule, so a truly
+absent port is rarer than it looks.
 
 ## Input reference
 
@@ -73,7 +90,6 @@ filters:                                # or filtersRef: <path> (status./context
   values: ["prod"]
 parameters:                             # or parametersRef: <path>; scalar args per queryType:
   # allRegions, allAvailabilityZones (bool); owners, imageIds (csv)        [EC2]
-  # operation: RouteTables | SecurityGroupRules | Subnets  (DescribeEc2)   [EC2]
   # serviceCode, quotaCode                                                 [Service Quotas]
   # typeName, resourceModel, roleArn, hydrate (default true)               [Cloud Control]
   # resourceTypeFilters (csv)                                              [Tagging API]

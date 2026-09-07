@@ -47,7 +47,9 @@ status:
 | `composition-caller-identity.yaml` | GetCallerIdentity | STS | `status.callerIdentity` |
 | `composition-availability-zones.yaml` | DescribeAvailabilityZones | EC2 | `status.availabilityZones` |
 | `composition-ami-lookup.yaml` | DescribeImages | EC2 | `status.amis` |
-| `composition-ec2-route-tables.yaml` | DescribeEc2 (`operation=RouteTables`) | EC2 | `status.routeTables` |
+| `composition-ec2-route-tables.yaml` | DescribeRouteTables | EC2 | `status.routeTables` |
+| `composition-ec2-subnets.yaml` | DescribeSubnets | EC2 | `status.subnets` |
+| `composition-ec2-security-group-rules.yaml` | DescribeSecurityGroupRules | EC2 | `status.securityGroupRules` |
 | `composition-service-quotas.yaml` | ListServiceQuotas | Service Quotas | `status.ec2Quotas` |
 | `composition-cloudcontrol-vpcs.yaml` | ListResources | Cloud Control | `status.prodVpcs` |
 | `composition-cloudcontrol-ids.yaml` | ListResources (`hydrate=false`) | Cloud Control | `status.vpcIds` |

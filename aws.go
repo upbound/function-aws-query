@@ -53,15 +53,17 @@ type handler func(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, 
 
 func (q *AWSQuery) registry() map[string]handler {
 	return map[string]handler{
-		"GetCallerIdentity":         q.getCallerIdentity,
-		"DescribeRegions":           q.describeRegions,
-		"DescribeAvailabilityZones": q.describeAvailabilityZones,
-		"DescribeImages":            q.describeImages,
-		"DescribeEc2":               q.describeEc2,
-		"ListServiceQuotas":         q.listServiceQuotas,
-		"GetServiceQuota":           q.getServiceQuota,
-		"ListResources":             q.listResources,
-		"GetResources":              q.getResources,
+		"GetCallerIdentity":          q.getCallerIdentity,
+		"DescribeRegions":            q.describeRegions,
+		"DescribeAvailabilityZones":  q.describeAvailabilityZones,
+		"DescribeImages":             q.describeImages,
+		"DescribeRouteTables":        q.describeRouteTables,
+		"DescribeSubnets":            q.describeSubnets,
+		"DescribeSecurityGroupRules": q.describeSecurityGroupRules,
+		"ListServiceQuotas":          q.listServiceQuotas,
+		"GetServiceQuota":            q.getServiceQuota,
+		"ListResources":              q.listResources,
+		"GetResources":               q.getResources,
 	}
 }
 
@@ -309,29 +311,33 @@ func (q *AWSQuery) describeImages(ctx context.Context, cfg aws.Config, in *v1bet
 	return res, nil
 }
 
-// describeEc2 runs one read-only EC2 Describe*, selected by
-// parameters.operation. Filters are server-side, so unlike ListResources it
-// never enumerates the account.
-func (q *AWSQuery) describeEc2(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+// ec2Client validates the shared preconditions for the direct EC2 describes and
+// returns a client. The filter guard is not optional hygiene: these calls are
+// paginated and unbounded, so an empty filter set pages an entire region into XR
+// status. It is reachable without a user typo - toFilters returns a non-nil
+// empty slice, so a filtersRef that resolves to [] arrives here as len 0.
+// describeImages guards the same way for the same reason.
+//
+// hint names the filters that operation actually accepts; they differ per
+// operation and an unrecognised filter NAME is fatal, so a generic message
+// would send the reader in the wrong direction.
+func ec2Client(cfg aws.Config, in *v1beta1.Input, queryType, hint string) (*ec2.Client, error) {
 	if cfg.Region == "" {
-		return nil, errRegionRequired("DescribeEc2")
+		return nil, errRegionRequired(queryType)
 	}
-	client := ec2.NewFromConfig(cfg)
-	switch op := in.Parameters["operation"]; op {
-	case "RouteTables":
-		return describeRouteTables(ctx, client, in)
-	case "SecurityGroupRules":
-		return describeSecurityGroupRules(ctx, client, in)
-	case "Subnets":
-		return describeSubnets(ctx, client, in)
-	default:
-		return nil, errors.Errorf("DescribeEc2 requires parameters.operation to be one of RouteTables, SecurityGroupRules, Subnets (got %q)", op)
+	if len(in.Filters) == 0 {
+		return nil, errors.Errorf("%s requires filters to avoid an unbounded region-wide read (e.g. %s)", queryType, hint)
 	}
+	return ec2.NewFromConfig(cfg), nil
 }
 
 // describeRouteTables lists route tables with their associations (EC2,
 // paginated). The main association ID is not in the CloudFormation schema.
-func describeRouteTables(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+func (q *AWSQuery) describeRouteTables(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+	client, err := ec2Client(cfg, in, "DescribeRouteTables", "vpc-id, route-table-id, association.subnet-id, tag:<key>")
+	if err != nil {
+		return nil, err
+	}
 	p := ec2.NewDescribeRouteTablesPaginator(client, &ec2.DescribeRouteTablesInput{Filters: toEC2Filters(in.Filters)})
 	res := []any{}
 	for p.HasMorePages() {
@@ -400,8 +406,12 @@ func routeTableRoutes(routes []ec2types.Route) []any {
 }
 
 // describeSecurityGroupRules lists security group rules (EC2, paginated).
-// Scope with a group-id filter.
-func describeSecurityGroupRules(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+// Note the filter names: this operation does NOT accept vpc-id.
+func (q *AWSQuery) describeSecurityGroupRules(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+	client, err := ec2Client(cfg, in, "DescribeSecurityGroupRules", "group-id, security-group-rule-id, tag:<key>")
+	if err != nil {
+		return nil, err
+	}
 	p := ec2.NewDescribeSecurityGroupRulesPaginator(client, &ec2.DescribeSecurityGroupRulesInput{Filters: toEC2Filters(in.Filters)})
 	res := []any{}
 	for p.HasMorePages() {
@@ -423,8 +433,13 @@ func describeSecurityGroupRules(ctx context.Context, client *ec2.Client, in *v1b
 				"description":          aws.ToString(r.Description),
 				"tags":                 ec2TagsToMap(r.Tags),
 			}
+			// The full referenced-group identity, not just the id: a
+			// cross-account rule is otherwise indistinguishable from a local
+			// one, since sg-abc in another account is a different group.
 			if r.ReferencedGroupInfo != nil {
 				m["referencedGroupId"] = aws.ToString(r.ReferencedGroupInfo.GroupId)
+				m["referencedGroupUserId"] = aws.ToString(r.ReferencedGroupInfo.UserId)
+				m["referencedGroupVpcId"] = aws.ToString(r.ReferencedGroupInfo.VpcId)
 			}
 			putInt32(m, "fromPort", r.FromPort)
 			putInt32(m, "toPort", r.ToPort)
@@ -436,7 +451,11 @@ func describeSecurityGroupRules(ctx context.Context, client *ec2.Client, in *v1b
 
 // describeSubnets lists subnets (EC2, paginated). Returns only live subnets,
 // unlike the Tagging API.
-func describeSubnets(ctx context.Context, client *ec2.Client, in *v1beta1.Input) (any, error) {
+func (q *AWSQuery) describeSubnets(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+	client, err := ec2Client(cfg, in, "DescribeSubnets", "vpc-id, subnet-id, availability-zone, tag:<key>")
+	if err != nil {
+		return nil, err
+	}
 	p := ec2.NewDescribeSubnetsPaginator(client, &ec2.DescribeSubnetsInput{Filters: toEC2Filters(in.Filters)})
 	res := []any{}
 	for p.HasMorePages() {
@@ -458,6 +477,25 @@ func describeSubnets(ctx context.Context, client *ec2.Client, in *v1beta1.Input)
 				"mapPublicIpOnLaunch": aws.ToBool(s.MapPublicIpOnLaunch),
 				"tags":                ec2TagsToMap(s.Tags),
 			}
+			// IPv6 addressing. An IPv6-only subnet has no CidrBlock at all, so
+			// without these it projects cidrBlock:"" and is indistinguishable
+			// from a projection failure. AWS::EC2::Subnet models Ipv6CidrBlock,
+			// so omitting it would make this query strictly worse than the
+			// Cloud Control alternative it is meant to replace.
+			m["ipv6Native"] = aws.ToBool(s.Ipv6Native)
+			ipv6 := make([]any, 0, len(s.Ipv6CidrBlockAssociationSet))
+			for _, a := range s.Ipv6CidrBlockAssociationSet {
+				state := ""
+				if a.Ipv6CidrBlockState != nil {
+					state = string(a.Ipv6CidrBlockState.State)
+				}
+				ipv6 = append(ipv6, map[string]any{
+					"associationId": aws.ToString(a.AssociationId),
+					"ipv6CidrBlock": aws.ToString(a.Ipv6CidrBlock),
+					"state":         state,
+				})
+			}
+			m["ipv6CidrBlockAssociationSet"] = ipv6
 			putInt32(m, "availableIpAddressCount", s.AvailableIpAddressCount)
 			res = append(res, m)
 		}

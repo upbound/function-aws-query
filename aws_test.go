@@ -326,20 +326,21 @@ func TestHandlerValidationGuards(t *testing.T) {
 	noRegion := aws.Config{} // empty region triggers the region-required guard
 
 	cases := map[string]func() (any, error){
-		"AZsNoRegion":       func() (any, error) { return q.describeAvailabilityZones(ctx, noRegion, &v1beta1.Input{}) },
-		"ImagesNoRegion":    func() (any, error) { return q.describeImages(ctx, noRegion, &v1beta1.Input{}) },
-		"QuotasNoRegion":    func() (any, error) { return q.listServiceQuotas(ctx, noRegion, &v1beta1.Input{}) },
-		"GetQuotaNoRegion":  func() (any, error) { return q.getServiceQuota(ctx, noRegion, &v1beta1.Input{}) },
-		"ListResNoRegion":   func() (any, error) { return q.listResources(ctx, noRegion, &v1beta1.Input{}) },
-		"GetResNoRegion":    func() (any, error) { return q.getResources(ctx, noRegion, &v1beta1.Input{}) },
-		"ImagesNoFilter":    func() (any, error) { return q.describeImages(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"QuotasNoService":   func() (any, error) { return q.listServiceQuotas(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"GetQuotaNoCodes":   func() (any, error) { return q.getServiceQuota(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"ListResNoTypeName": func() (any, error) { return q.listResources(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"Ec2NoRegion":       func() (any, error) { return q.describeEc2(ctx, noRegion, &v1beta1.Input{}) },
-		"Ec2NoOperation":    func() (any, error) { return q.describeEc2(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
-		"Ec2BadOperation": func() (any, error) {
-			return q.describeEc2(ctx, stubCfg(&respStub{}), &v1beta1.Input{Parameters: map[string]string{"operation": "Vpcs"}})
+		"AZsNoRegion":         func() (any, error) { return q.describeAvailabilityZones(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoRegion":      func() (any, error) { return q.describeImages(ctx, noRegion, &v1beta1.Input{}) },
+		"QuotasNoRegion":      func() (any, error) { return q.listServiceQuotas(ctx, noRegion, &v1beta1.Input{}) },
+		"GetQuotaNoRegion":    func() (any, error) { return q.getServiceQuota(ctx, noRegion, &v1beta1.Input{}) },
+		"ListResNoRegion":     func() (any, error) { return q.listResources(ctx, noRegion, &v1beta1.Input{}) },
+		"GetResNoRegion":      func() (any, error) { return q.getResources(ctx, noRegion, &v1beta1.Input{}) },
+		"ImagesNoFilter":      func() (any, error) { return q.describeImages(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"QuotasNoService":     func() (any, error) { return q.listServiceQuotas(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"GetQuotaNoCodes":     func() (any, error) { return q.getServiceQuota(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"ListResNoTypeName":   func() (any, error) { return q.listResources(ctx, stubCfg(&respStub{}), &v1beta1.Input{}) },
+		"RouteTablesNoRegion": func() (any, error) { return q.describeRouteTables(ctx, noRegion, &v1beta1.Input{}) },
+		"SubnetsNoRegion":     func() (any, error) { return q.describeSubnets(ctx, noRegion, &v1beta1.Input{}) },
+		"SGRulesNoRegion":     func() (any, error) { return q.describeSecurityGroupRules(ctx, noRegion, &v1beta1.Input{}) },
+		"SubnetsNoFilters": func() (any, error) {
+			return q.describeSubnets(ctx, stubCfg(&respStub{}), &v1beta1.Input{})
 		},
 	}
 	for name, call := range cases {
@@ -489,7 +490,7 @@ func TestDescribeImages(t *testing.T) {
 	}
 }
 
-// --- DescribeEc2 ------------------------------------------------------------
+// --- Direct EC2 describes ---------------------------------------------------
 
 const (
 	routeTablesPage1 = `<DescribeRouteTablesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
@@ -530,32 +531,37 @@ const (
 		`</item></securityGroupRuleSet></DescribeSecurityGroupRulesResponse>`
 )
 
-func ec2Input(operation string) *v1beta1.Input {
-	return &v1beta1.Input{
-		Parameters: map[string]string{"operation": operation},
-		Filters:    []v1beta1.Filter{{Name: "vpc-id", Values: []string{"vpc-1"}}},
+// ec2Input builds an input for one query type with a filter that query type
+// actually supports. This is not cosmetic: DescribeSecurityGroupRules accepts
+// only group-id, security-group-rule-id and tag:<key>, and an unrecognised
+// filter NAME is fatal - so a shared "vpc-id" would put a request on the wire
+// that AWS rejects, while respStub's canned body made the suite pass anyway.
+func ec2Input(queryType string) *v1beta1.Input {
+	name, value := "vpc-id", "vpc-1"
+	if queryType == "DescribeSecurityGroupRules" {
+		name, value = "group-id", "sg-1"
 	}
+	return &v1beta1.Input{Filters: []v1beta1.Filter{{Name: name, Values: []string{value}}}}
 }
 
-// TestDescribeEc2Dispatches proves every allow-listed operation reaches its own
-// describe call, and that an unsupported one names the supported values.
-func TestDescribeEc2Dispatches(t *testing.T) {
-	if newQuery().registry()["DescribeEc2"] == nil {
-		t.Fatal("DescribeEc2 is not wired into the handler registry")
+// TestEc2Dispatches proves each direct EC2 describe is registered under
+// its own queryType and reaches its own describe call. An unsupported value no
+// longer needs a runtime case: queryType is CRD-enum validated, so a typo is
+// rejected at admission instead of aborting a composition at reconcile.
+func TestEc2Dispatches(t *testing.T) {
+	cases := map[string]string{
+		"DescribeRouteTables":        routeTablesPage2,
+		"DescribeSubnets":            subnetsBody,
+		"DescribeSecurityGroupRules": securityGroupRulesBody,
 	}
-
-	cases := map[string]struct {
-		operation string
-		body      string
-	}{
-		"RouteTables":        {operation: "RouteTables", body: routeTablesPage2},
-		"SecurityGroupRules": {operation: "SecurityGroupRules", body: securityGroupRulesBody},
-		"Subnets":            {operation: "Subnets", body: subnetsBody},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := newQuery().describeEc2(context.Background(),
-				stubCfg(&respStub{bodies: []string{tc.body}, contentType: "text/xml"}), ec2Input(tc.operation))
+	for queryType, body := range cases {
+		t.Run(queryType, func(t *testing.T) {
+			h := newQuery().registry()[queryType]
+			if h == nil {
+				t.Fatalf("%s is not wired into the handler registry", queryType)
+			}
+			got, err := h(context.Background(),
+				stubCfg(&respStub{bodies: []string{body}, contentType: "text/xml"}), ec2Input(queryType))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -565,25 +571,32 @@ func TestDescribeEc2Dispatches(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("Unsupported", func(t *testing.T) {
-		_, err := newQuery().describeEc2(context.Background(), stubCfg(&respStub{}), ec2Input("Vpcs"))
-		if err == nil {
-			t.Fatal("expected an error for an unsupported operation")
-		}
-		for _, want := range []string{"RouteTables", "SecurityGroupRules", "Subnets"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error should name %s: %v", want, err)
-			}
-		}
-	})
 }
 
-// TestDescribeEc2RouteTablesPaginates covers the projection (associations, incl.
+// TestEc2FilterGuard pins the must-filter guard. These calls are
+// paginated and unbounded, so an empty filter set would page a whole region
+// into XR status. It is reachable without a typo: toFilters returns a non-nil
+// empty slice, so a filtersRef resolving to [] arrives with len 0.
+func TestEc2FilterGuard(t *testing.T) {
+	for _, queryType := range []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroupRules"} {
+		t.Run(queryType, func(t *testing.T) {
+			h := newQuery().registry()[queryType]
+			_, err := h(context.Background(), stubCfg(&respStub{}), &v1beta1.Input{})
+			if err == nil {
+				t.Fatal("expected the filter guard to reject an empty filter set")
+			}
+			if !strings.Contains(err.Error(), "requires filters") {
+				t.Errorf("expected the filter guard, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestEc2RouteTablesPaginates covers the projection (associations, incl.
 // the main association ID) across two pages.
-func TestDescribeEc2RouteTablesPaginates(t *testing.T) {
+func TestEc2RouteTablesPaginates(t *testing.T) {
 	stub := &respStub{bodies: []string{routeTablesPage1, routeTablesPage2}, contentType: "text/xml"}
-	got, err := newQuery().describeEc2(context.Background(), stubCfg(stub), ec2Input("RouteTables"))
+	got, err := newQuery().describeRouteTables(context.Background(), stubCfg(stub), ec2Input("DescribeRouteTables"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -621,6 +634,9 @@ func TestDescribeEc2RouteTablesPaginates(t *testing.T) {
 		t.Fatalf("expected 2 requests (one per page), got %d", len(stub.requests))
 	}
 	// vpc-id must go server-side - that is the whole point over ListResources.
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
+	}
 	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
 		t.Errorf("vpc-id filter not sent server-side: %s", stub.requests[0])
 	}
@@ -628,9 +644,8 @@ func TestDescribeEc2RouteTablesPaginates(t *testing.T) {
 
 // Isolates the region guard: the shared guards table only asserts err != nil,
 // which the SDK's endpoint-resolution error satisfies on its own.
-func TestDescribeEc2RegionGuard(t *testing.T) {
-	in := &v1beta1.Input{Parameters: map[string]string{"operation": "Subnets"}}
-	_, err := newQuery().describeEc2(context.Background(), aws.Config{}, in)
+func TestEc2RegionGuard(t *testing.T) {
+	_, err := newQuery().describeSubnets(context.Background(), aws.Config{}, ec2Input("DescribeSubnets"))
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -639,9 +654,9 @@ func TestDescribeEc2RegionGuard(t *testing.T) {
 	}
 }
 
-func TestDescribeEc2Subnets(t *testing.T) {
+func TestEc2Subnets(t *testing.T) {
 	stub := &respStub{bodies: []string{subnetsBody}, contentType: "text/xml"}
-	got, err := newQuery().describeEc2(context.Background(), stubCfg(stub), ec2Input("Subnets"))
+	got, err := newQuery().describeSubnets(context.Background(), stubCfg(stub), ec2Input("DescribeSubnets"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -650,10 +665,16 @@ func TestDescribeEc2Subnets(t *testing.T) {
 		"vpcId": "vpc-1", "ownerId": "123456789012", "availabilityZone": "eu-central-1a",
 		"availabilityZoneId": "euc1-az2", "cidrBlock": "10.0.1.0/24", "state": "available",
 		"defaultForAz": false, "mapPublicIpOnLaunch": true, "availableIpAddressCount": int64(250),
+		// Always projected, so an IPv6-only subnet is distinguishable from a
+		// projection failure. This fixture is IPv4-only, hence the empty set.
+		"ipv6Native": false, "ipv6CidrBlockAssociationSet": []any{},
 		"tags": map[string]any{"Name": "public-a"},
 	}}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
 	}
 	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
 		t.Errorf("filter not sent server-side: %s", stub.requests[0])
@@ -662,9 +683,9 @@ func TestDescribeEc2Subnets(t *testing.T) {
 
 // Optional keys: referencedGroupId only for group references, ports only when
 // on the wire - a live all-protocol rule reports -1/-1, not nothing.
-func TestDescribeEc2SecurityGroupRules(t *testing.T) {
+func TestEc2SecurityGroupRules(t *testing.T) {
 	stub := &respStub{bodies: []string{securityGroupRulesBody}, contentType: "text/xml"}
-	got, err := newQuery().describeEc2(context.Background(), stubCfg(stub), ec2Input("SecurityGroupRules"))
+	got, err := newQuery().describeSecurityGroupRules(context.Background(), stubCfg(stub), ec2Input("DescribeSecurityGroupRules"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -683,6 +704,9 @@ func TestDescribeEc2SecurityGroupRules(t *testing.T) {
 			"isEgress": true, "ipProtocol": "-1", "fromPort": int64(-1), "toPort": int64(-1),
 			"cidrIpv4": "", "cidrIpv6": "",
 			"prefixListId": "", "description": "", "referencedGroupId": "sg-2",
+			// Kept alongside the id so a cross-account reference is not
+			// mistaken for a local group. Empty in this fixture.
+			"referencedGroupUserId": "", "referencedGroupVpcId": "",
 			"tags": map[string]any{},
 		},
 		map[string]any{
@@ -695,7 +719,10 @@ func TestDescribeEc2SecurityGroupRules(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
 	}
-	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
+	if len(stub.requests) == 0 {
+		t.Fatal("no request recorded")
+	}
+	if !strings.Contains(stub.requests[0], "Filter.1.Name=group-id") {
 		t.Errorf("filter not sent server-side: %s", stub.requests[0])
 	}
 }
