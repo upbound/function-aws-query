@@ -23,7 +23,8 @@ result is written to `target` (`status.<field>` or `context.<field>`).
 | `DescribeImages` | `[{imageId, name, ownerId, creationDate, architecture, state, rootDeviceType, description}]` |
 | `DescribeRouteTables` | `[{routeTableId, vpcId, ownerId, associations[{routeTableAssociationId, routeTableId, subnetId, gatewayId, main, state}], routes[{destinationCidrBlock, destinationIpv6CidrBlock, destinationPrefixListId, gatewayId, natGatewayId, transitGatewayId, vpcPeeringConnectionId, egressOnlyInternetGatewayId, carrierGatewayId, localGatewayId, coreNetworkArn, instanceId, networkInterfaceId, origin, state}], tags{}}]`. Carries the **main association ID**, which no CloudFormation schema models. `filters` **required**: `vpc-id`, `route-table-id`, `association.subnet-id`, `tag:<key>`. |
 | `DescribeSubnets` | `[{subnetId, subnetArn, vpcId, ownerId, availabilityZone, availabilityZoneId, cidrBlock, state, defaultForAz, mapPublicIpOnLaunch, availableIpAddressCount, ipv6Native, ipv6CidrBlockAssociationSet[{associationId, ipv6CidrBlock, state}], tags{}}]`. Returns only **live** subnets, unlike the Tagging API. `filters` **required**: `vpc-id`, `subnet-id`, `availability-zone`, `tag:<key>`. |
-| `DescribeSecurityGroupRules` | `[{securityGroupRuleId, securityGroupRuleArn, groupId, groupOwnerId, isEgress, ipProtocol, fromPort, toPort, cidrIpv4, cidrIpv6, prefixListId, referencedGroupId, referencedGroupUserId, referencedGroupVpcId, description, tags{}}]`. `filters` **required**: `group-id`, `security-group-rule-id`, `tag:<key>` - this operation does **not** accept `vpc-id`. |
+| `DescribeSecurityGroups` | `[{groupId, groupName, securityGroupArn, description, vpcId, ownerId, tags{}}]`. The only server-side path from a **VPC to its groups** - `DescribeSecurityGroupRules` does not accept `vpc-id`. Group-level only: the inline rules carry no rule ID, so pass the `groupId` from here to `DescribeSecurityGroupRules`. `filters` **required**: `vpc-id`, `group-id`, `group-name`, `description`, `owner-id`, `tag:<key>`. |
+| `DescribeSecurityGroupRules` | `[{securityGroupRuleId, securityGroupRuleArn, groupId, groupOwnerId, isEgress, ipProtocol, fromPort, toPort, cidrIpv4, cidrIpv6, prefixListId, referencedGroupId, referencedGroupUserId, referencedGroupVpcId, description, tags{}}]`. `filters` **required**: `group-id`, `security-group-rule-id`, `tag:<key>` - this operation does **not** accept `vpc-id`; AWS errors on it only where the region holds rules, and returns `[]` otherwise. |
 | `ListServiceQuotas` | `[{quotaCode, quotaName, value, unit, adjustable, globalQuota}]` (all quotas for a `serviceCode`) |
 | `GetServiceQuota` | `{quotaCode, quotaName, value, unit, adjustable, globalQuota}` (a single quota; needs `serviceCode`+`quotaCode`) |
 
@@ -46,12 +47,12 @@ result is written to `target` (`status.<field>` or `context.<field>`).
   type including untagged ones. Caveats: needs that type's read IAM permissions,
   filters are applied client-side, and hydration costs one `GetResource` call per
   resource (use `hydrate=false` to skip it when you only want identifiers).
-- **`DescribeRouteTables` / `DescribeSubnets` / `DescribeSecurityGroupRules`** -
-  when the identifier you need is not in the resource's CloudFormation schema (a
-  route table's **main association ID** is the canonical case), or when you need
-  an **authoritative** answer. Needs `ec2:DescribeRouteTables`,
-  `ec2:DescribeSubnets` and `ec2:DescribeSecurityGroupRules` respectively;
-  without them the call fails at reconcile with `UnauthorizedOperation`. It
+- **`DescribeRouteTables` / `DescribeSubnets` / `DescribeSecurityGroups` /
+  `DescribeSecurityGroupRules`** - when the identifier you need is not in the
+  resource's CloudFormation schema (a route table's **main association ID** is
+  the canonical case), or when you need an **authoritative** answer. Each needs
+  its matching `ec2:Describe*` permission; without it the call fails at
+  reconcile with `UnauthorizedOperation`. It
   reads only what the `filters` select, server-side, so a foreign resource cannot
   fail the query. `filters` are **required**, and the accepted names differ per
   query type (see the table above); unfiltered these would be region-wide reads.
@@ -63,6 +64,10 @@ result is written to `target` (`status.<field>` or `context.<field>`).
   Tagging API can keep reporting deleted resources for a while - which, if they
   carry the same identifying tag as their live replacements, silently doubles
   the result set.
+  Security groups take two steps: `DescribeSecurityGroups` filtered by `vpc-id`
+  gives you the groups, then `DescribeSecurityGroupRules` filtered by those
+  `group-id`s gives you their rules, since that second operation cannot filter
+  by VPC.
 
 Rule of thumb: *IDs by tag →* `GetResources`; *attributes / full inventory of a
 type →* `ListResources`; *EC2 identifiers CloudFormation does not model, or an

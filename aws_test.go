@@ -339,6 +339,7 @@ func TestHandlerValidationGuards(t *testing.T) {
 		"RouteTablesNoRegion": func() (any, error) { return q.describeRouteTables(ctx, noRegion, &v1beta1.Input{}) },
 		"SubnetsNoRegion":     func() (any, error) { return q.describeSubnets(ctx, noRegion, &v1beta1.Input{}) },
 		"SGRulesNoRegion":     func() (any, error) { return q.describeSecurityGroupRules(ctx, noRegion, &v1beta1.Input{}) },
+		"SGsNoRegion":         func() (any, error) { return q.describeSecurityGroups(ctx, noRegion, &v1beta1.Input{}) },
 		"SubnetsNoFilters": func() (any, error) {
 			return q.describeSubnets(ctx, stubCfg(&respStub{}), &v1beta1.Input{})
 		},
@@ -529,6 +530,24 @@ const (
 		`<item><securityGroupRuleId>sgr-3</securityGroupRuleId><groupId>sg-1</groupId><groupOwnerId>123456789012</groupOwnerId>` +
 		`<isEgress>false</isEgress><ipProtocol>icmp</ipProtocol><prefixListId>pl-1</prefixListId>` +
 		`</item></securityGroupRuleSet></DescribeSecurityGroupRulesResponse>`
+
+	securityGroupsPage1 = `<DescribeSecurityGroupsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<securityGroupInfo><item><groupId>sg-1</groupId><groupName>default</groupName>` +
+		`<groupDescription>default VPC security group</groupDescription><vpcId>vpc-1</vpcId>` +
+		`<ownerId>123456789012</ownerId>` +
+		`<securityGroupArn>arn:aws:ec2:eu-central-1:123456789012:security-group/sg-1</securityGroupArn>` +
+		// Inline rules the SDK deserializes but the projection drops on purpose.
+		`<ipPermissions><item><ipProtocol>tcp</ipProtocol><fromPort>443</fromPort><toPort>443</toPort>` +
+		`<ipRanges><item><cidrIp>0.0.0.0/0</cidrIp></item></ipRanges></item></ipPermissions>` +
+		`<tagSet/></item></securityGroupInfo>` +
+		`<nextToken>tok</nextToken></DescribeSecurityGroupsResponse>`
+
+	securityGroupsPage2 = `<DescribeSecurityGroupsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>r</requestId>` +
+		`<securityGroupInfo><item><groupId>sg-2</groupId><groupName>app</groupName>` +
+		`<groupDescription>app tier</groupDescription><vpcId>vpc-1</vpcId><ownerId>123456789012</ownerId>` +
+		`<securityGroupArn>arn:aws:ec2:eu-central-1:123456789012:security-group/sg-2</securityGroupArn>` +
+		`<tagSet><item><key>Name</key><value>app</value></item></tagSet>` +
+		`</item></securityGroupInfo></DescribeSecurityGroupsResponse>`
 )
 
 // ec2Input builds an input for one query type with a filter that query type
@@ -553,6 +572,7 @@ func TestEc2Dispatches(t *testing.T) {
 		"DescribeRouteTables":        routeTablesPage2,
 		"DescribeSubnets":            subnetsBody,
 		"DescribeSecurityGroupRules": securityGroupRulesBody,
+		"DescribeSecurityGroups":     securityGroupsPage2,
 	}
 	for queryType, body := range cases {
 		t.Run(queryType, func(t *testing.T) {
@@ -578,7 +598,7 @@ func TestEc2Dispatches(t *testing.T) {
 // into XR status. It is reachable without a typo: toFilters returns a non-nil
 // empty slice, so a filtersRef resolving to [] arrives with len 0.
 func TestEc2FilterGuard(t *testing.T) {
-	for _, queryType := range []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroupRules"} {
+	for _, queryType := range []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroupRules", "DescribeSecurityGroups"} {
 		t.Run(queryType, func(t *testing.T) {
 			h := newQuery().registry()[queryType]
 			_, err := h(context.Background(), stubCfg(&respStub{}), &v1beta1.Input{})
@@ -724,6 +744,43 @@ func TestEc2SecurityGroupRules(t *testing.T) {
 	}
 	if !strings.Contains(stub.requests[0], "Filter.1.Name=group-id") {
 		t.Errorf("filter not sent server-side: %s", stub.requests[0])
+	}
+}
+
+// TestEc2SecurityGroups pins the group-level projection across two pages.
+// ipPermissions/ipPermissionsEgress are deliberately NOT projected: they carry
+// no securityGroupRuleId, so an individual rule in them is not addressable and
+// DescribeSecurityGroupRules owns rule-level data. Page 1 carries an inbound
+// rule so that omission stays pinned rather than accidental.
+func TestEc2SecurityGroups(t *testing.T) {
+	stub := &respStub{bodies: []string{securityGroupsPage1, securityGroupsPage2}, contentType: "text/xml"}
+	got, err := newQuery().describeSecurityGroups(context.Background(), stubCfg(stub), ec2Input("DescribeSecurityGroups"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []any{
+		map[string]any{
+			"groupId": "sg-1", "groupName": "default", "description": "default VPC security group",
+			"securityGroupArn": "arn:aws:ec2:eu-central-1:123456789012:security-group/sg-1",
+			"vpcId":            "vpc-1", "ownerId": "123456789012", "tags": map[string]any{},
+		},
+		map[string]any{
+			"groupId": "sg-2", "groupName": "app", "description": "app tier",
+			"securityGroupArn": "arn:aws:ec2:eu-central-1:123456789012:security-group/sg-2",
+			"vpcId":            "vpc-1", "ownerId": "123456789012", "tags": map[string]any{"Name": "app"},
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) != 2 {
+		t.Fatalf("expected 2 requests (one per page), got %d", len(stub.requests))
+	}
+	// Unlike DescribeSecurityGroupRules, this operation does accept vpc-id, and
+	// that is the reason it exists: it is the only way to get from a VPC to its
+	// groups server-side.
+	if !strings.Contains(stub.requests[0], "Filter.1.Name=vpc-id") {
+		t.Errorf("vpc-id filter not sent server-side: %s", stub.requests[0])
 	}
 }
 

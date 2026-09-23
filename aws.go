@@ -59,6 +59,7 @@ func (q *AWSQuery) registry() map[string]handler {
 		"DescribeImages":             q.describeImages,
 		"DescribeRouteTables":        q.describeRouteTables,
 		"DescribeSubnets":            q.describeSubnets,
+		"DescribeSecurityGroups":     q.describeSecurityGroups,
 		"DescribeSecurityGroupRules": q.describeSecurityGroupRules,
 		"ListServiceQuotas":          q.listServiceQuotas,
 		"GetServiceQuota":            q.getServiceQuota,
@@ -405,8 +406,42 @@ func routeTableRoutes(routes []ec2types.Route) []any {
 	return out
 }
 
+// describeSecurityGroups lists security groups (EC2, paginated). Projects
+// group-level fields only: the inline IpPermissions/IpPermissionsEgress carry
+// no security group rule ID, so an individual rule in them is not addressable -
+// DescribeSecurityGroupRules owns rule-level data, filtered by the groupId
+// returned here. Unlike that operation this one does accept vpc-id, which makes
+// it the only server-side path from a VPC to its groups.
+func (q *AWSQuery) describeSecurityGroups(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
+	client, err := ec2Client(cfg, in, "DescribeSecurityGroups", "vpc-id, group-id, group-name, description, owner-id, tag:<key>")
+	if err != nil {
+		return nil, err
+	}
+	p := ec2.NewDescribeSecurityGroupsPaginator(client, &ec2.DescribeSecurityGroupsInput{Filters: toEC2Filters(in.Filters)})
+	res := []any{}
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "DescribeSecurityGroups failed")
+		}
+		for _, sg := range page.SecurityGroups {
+			res = append(res, map[string]any{
+				"groupId":          aws.ToString(sg.GroupId),
+				"groupName":        aws.ToString(sg.GroupName),
+				"securityGroupArn": aws.ToString(sg.SecurityGroupArn),
+				"description":      aws.ToString(sg.Description),
+				"vpcId":            aws.ToString(sg.VpcId),
+				"ownerId":          aws.ToString(sg.OwnerId),
+				"tags":             ec2TagsToMap(sg.Tags),
+			})
+		}
+	}
+	return res, nil
+}
+
 // describeSecurityGroupRules lists security group rules (EC2, paginated).
-// Note the filter names: this operation does NOT accept vpc-id.
+// Note the filter names: unlike DescribeSecurityGroups, this operation does NOT
+// accept vpc-id, though AWS only errors on it where the region holds rules.
 func (q *AWSQuery) describeSecurityGroupRules(ctx context.Context, cfg aws.Config, in *v1beta1.Input) (any, error) {
 	client, err := ec2Client(cfg, in, "DescribeSecurityGroupRules", "group-id, security-group-rule-id, tag:<key>")
 	if err != nil {
