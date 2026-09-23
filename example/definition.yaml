@@ -15,11 +15,84 @@ spec:
       openAPIV3Schema:
         type: object
         properties:
+          # What the examples read via regionRef/parametersRef/filtersRef.
           spec:
             type: object
             properties:
               region:
                 type: string
+              imageParams:
+                type: object
+                additionalProperties:
+                  type: string
+              imageFilters:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    values:
+                      type: array
+                      items:
+                        type: string
+          # Each `target: status.<field>` the examples write, declared one by one:
+          # Crossplane drops x-kubernetes-preserve-unknown-fields from status, so an
+          # undeclared target fails apply with "field not declared in schema".
           status:
             type: object
-            x-kubernetes-preserve-unknown-fields: true
+            properties:
+              allAvailableRegions:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              amis:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              availabilityZones:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              ec2Quotas:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              prodVpcs:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              routeTables:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              securityGroups:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              securityGroupRules:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              subnets:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              vpcIds:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              # GetCallerIdentity returns one object, not a list.
+              callerIdentity:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
