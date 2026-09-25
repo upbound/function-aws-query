@@ -28,7 +28,9 @@ import (
 type respStub struct {
 	bodies      []string
 	contentType string
-	calls       int
+	// status is the HTTP status of every response; zero means 200.
+	status int
+	calls  int
 	// requests records each marshalled request body, so a test can assert what
 	// was actually sent (e.g. that a filter went server-side).
 	requests []string
@@ -50,8 +52,12 @@ func (s *respStub) Do(req *http.Request) (*http.Response, error) {
 	if s.contentType != "" {
 		h.Set("Content-Type", s.contentType)
 	}
+	status := s.status
+	if status == 0 {
+		status = http.StatusOK
+	}
 	return &http.Response{
-		StatusCode: http.StatusOK,
+		StatusCode: status,
 		Header:     h,
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}, nil
@@ -550,6 +556,10 @@ const (
 		`</item></securityGroupInfo></DescribeSecurityGroupsResponse>`
 )
 
+// ec2QueryTypes are the direct EC2 describes that share the ec2Client guard
+// (region and filters required).
+var ec2QueryTypes = []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroups", "DescribeSecurityGroupRules"}
+
 // ec2Input builds an input for one query type with a filter that query type
 // actually supports. This is not cosmetic: DescribeSecurityGroupRules accepts
 // only group-id, security-group-rule-id and tag:<key>, and an unrecognised
@@ -598,7 +608,7 @@ func TestEc2Dispatches(t *testing.T) {
 // into XR status. It is reachable without a typo: toFilters returns a non-nil
 // empty slice, so a filtersRef resolving to [] arrives with len 0.
 func TestEc2FilterGuard(t *testing.T) {
-	for _, queryType := range []string{"DescribeRouteTables", "DescribeSubnets", "DescribeSecurityGroupRules", "DescribeSecurityGroups"} {
+	for _, queryType := range ec2QueryTypes {
 		t.Run(queryType, func(t *testing.T) {
 			h := newQuery().registry()[queryType]
 			_, err := h(context.Background(), stubCfg(&respStub{}), &v1beta1.Input{})
@@ -665,12 +675,40 @@ func TestEc2RouteTablesPaginates(t *testing.T) {
 // Isolates the region guard: the shared guards table only asserts err != nil,
 // which the SDK's endpoint-resolution error satisfies on its own.
 func TestEc2RegionGuard(t *testing.T) {
-	_, err := newQuery().describeSubnets(context.Background(), aws.Config{}, ec2Input("DescribeSubnets"))
-	if err == nil {
-		t.Fatal("expected an error, got nil")
+	for _, queryType := range ec2QueryTypes {
+		t.Run(queryType, func(t *testing.T) {
+			h := newQuery().registry()[queryType]
+			_, err := h(context.Background(), aws.Config{}, ec2Input(queryType))
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), "requires a region") {
+				t.Errorf("expected the region guard, got: %v", err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "requires a region") {
-		t.Errorf("expected the region guard, got: %v", err)
+}
+
+// TestEc2APIError pins that an AWS-side failure - typically a missing
+// ec2:Describe* permission - surfaces wrapped with the operation name and the
+// AWS error code, rather than as an empty result written to the XR.
+func TestEc2APIError(t *testing.T) {
+	const body = `<Response><Errors><Error><Code>UnauthorizedOperation</Code>` +
+		`<Message>You are not authorized to perform this operation.</Message></Error></Errors>` +
+		`<RequestID>r</RequestID></Response>`
+	for _, queryType := range ec2QueryTypes {
+		t.Run(queryType, func(t *testing.T) {
+			stub := &respStub{bodies: []string{body}, contentType: "text/xml", status: http.StatusForbidden}
+			got, err := newQuery().registry()[queryType](context.Background(), stubCfg(stub), ec2Input(queryType))
+			if err == nil {
+				t.Fatalf("expected an error, got result %#v", got)
+			}
+			for _, want := range []string{queryType + " failed", "UnauthorizedOperation"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected %q in error, got: %v", want, err)
+				}
+			}
+		})
 	}
 }
 
