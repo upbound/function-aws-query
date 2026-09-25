@@ -21,7 +21,7 @@ type Input struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// QueryType selects the AWS read operation to perform.
-	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;DescribeRouteTables;DescribeSubnets;DescribeSecurityGroupRules;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
+	// +kubebuilder:validation:Enum=GetCallerIdentity;DescribeRegions;DescribeAvailabilityZones;DescribeImages;DescribeRouteTables;DescribeSubnets;DescribeSecurityGroups;DescribeSecurityGroupRules;ListServiceQuotas;GetServiceQuota;ListResources;GetResources
 	QueryType string `json:"queryType"`
 
 	// Region to target. Optional for global-ish calls (GetCallerIdentity,
@@ -44,9 +44,12 @@ type Input struct {
 	//     "association.subnet-id", "tag:<key>", ...
 	//   - DescribeSubnets (required): "vpc-id", "subnet-id",
 	//     "availability-zone", "tag:<key>", ...
+	//   - DescribeSecurityGroups (required): "vpc-id", "group-id",
+	//     "group-name", "description", "owner-id", "tag:<key>", ...
 	//   - DescribeSecurityGroupRules (required): "group-id",
-	//     "security-group-rule-id", "tag:<key>". This operation does NOT
-	//     accept "vpc-id".
+	//     "security-group-rule-id", "tag:<key>". Unlike DescribeSecurityGroups,
+	//     this operation does NOT accept "vpc-id"; AWS errors on it only where
+	//     the region holds rules, and returns an empty list otherwise.
 	//   - GetResources (Tagging API): each entry is a tag filter where name is
 	//     the tag key and values are the tag values (server-side).
 	//   - ListResources (Cloud Control): client-side property match where name

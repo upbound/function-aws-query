@@ -1,0 +1,35 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-ec2-security-groups
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # The VPC's default security group. AWS creates it, so it carries no tags and
+  # no Crossplane resource references it - neither GetResources nor a tag filter
+  # can find it. This is also the only EC2 describe that accepts vpc-id for
+  # security groups: DescribeSecurityGroupRules does not, so a rules query has
+  # to be filtered by the group-id this step returns.
+  - step: default-security-group
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: DescribeSecurityGroups
+      region: eu-central-1
+      filters:
+      - name: vpc-id
+        values: ["vpc-0123456789abcdef0"]
+      - name: group-name
+        values: ["default"]
+      target: status.securityGroups
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds
