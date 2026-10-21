@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"regexp"
@@ -47,8 +48,8 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
 
-	// Resolve region, filters, and parameters from references if specified
-	// (dynamic queries driven by spec/status/context).
+	// Resolve region, filters, parameters, and the assume-role chain from
+	// references if specified (dynamic queries driven by spec/status/context).
 	if err := f.resolveRegionRef(req, in, rsp); err != nil {
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
@@ -56,6 +57,9 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
 	if err := f.resolveParametersRef(req, in, rsp); err != nil {
+		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
+	}
+	if err := f.resolveAssumeRoleChainRef(req, in, rsp); err != nil {
 		return rsp, nil //nolint:nilerr // err is surfaced via rsp; the RPC itself must not fail
 	}
 
@@ -206,6 +210,32 @@ func (f *Function) resolveParametersRef(req *fnv1.RunFunctionRequest, in *v1beta
 	return nil
 }
 
+// resolveAssumeRoleChainRef resolves Identity.AssumeRoleChainRef into
+// Identity.AssumeRoleChain (overriding any static chain), so the role to assume
+// can be chosen at runtime.
+func (f *Function) resolveAssumeRoleChainRef(req *fnv1.RunFunctionRequest, in *v1beta1.Input, rsp *fnv1.RunFunctionResponse) error {
+	if in.Identity == nil || in.Identity.AssumeRoleChainRef == nil || *in.Identity.AssumeRoleChainRef == "" {
+		return nil
+	}
+	root, path, err := f.refRoot(req, *in.Identity.AssumeRoleChainRef)
+	if err != nil {
+		response.Fatal(rsp, err)
+		return err
+	}
+	v, ok := GetNestedValue(root, path)
+	if !ok {
+		return nil
+	}
+	chain, err := toAssumeRoleChain(v)
+	if err != nil {
+		err = errors.Wrapf(err, "cannot resolve assumeRoleChainRef %q", *in.Identity.AssumeRoleChainRef)
+		response.Fatal(rsp, err)
+		return err
+	}
+	in.Identity.AssumeRoleChain = chain
+	return nil
+}
+
 // toFilters converts a resolved reference value into a []v1beta1.Filter. The
 // value must be a list of objects, each with a "name" string and a "values" list.
 func toFilters(v any) ([]v1beta1.Filter, error) {
@@ -230,6 +260,35 @@ func toFilters(v any) ([]v1beta1.Filter, error) {
 			}
 		}
 		out = append(out, v1beta1.Filter{Name: name, Values: values})
+	}
+	return out, nil
+}
+
+// toAssumeRoleChain converts a resolved reference value into a
+// []v1beta1.AssumeRole. The value must be a list of objects using the
+// AssumeRole field names, each with a "roleARN" string.
+func toAssumeRoleChain(v any) ([]v1beta1.AssumeRole, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, errors.New("expected a list of {roleARN, ...} objects")
+	}
+	out := make([]v1beta1.AssumeRole, len(list))
+	for i, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil, errors.Errorf("role %d is not an object", i)
+		}
+		if arn, _ := m["roleARN"].(string); arn == "" {
+			return nil, errors.Errorf("role %d is missing a string 'roleARN'", i)
+		}
+		// Round-trip through JSON so the AssumeRole field names and types apply.
+		b, err := json.Marshal(m)
+		if err != nil {
+			return nil, errors.Wrapf(err, "role %d", i)
+		}
+		if err := json.Unmarshal(b, &out[i]); err != nil {
+			return nil, errors.Wrapf(err, "role %d", i)
+		}
 	}
 	return out, nil
 }

@@ -983,6 +983,91 @@ func TestRunFunctionResolvesRefs(t *testing.T) {
 	}
 }
 
+// TestRunFunctionResolvesAssumeRoleChainRef proves identity.assumeRoleChainRef
+// replaces the static chain before the query runs, keeps it when the path is
+// absent, and is fatal for a malformed value.
+func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
+	const envRef = "context.[apiextensions.crossplane.io/environment].roleChain"
+	static := []v1beta1.AssumeRole{{RoleARN: "arn:aws:iam::111111111111:role/static"}}
+	run := func(t *testing.T, ref, ctx string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
+		t.Helper()
+		var seen *v1beta1.Input
+		f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, in *v1beta1.Input) (any, error) {
+			seen = in
+			return map[string]any{}, nil
+		}}}
+		req := &fnv1.RunFunctionRequest{
+			Meta: &fnv1.RequestMeta{Tag: "test"},
+			Input: resource.MustStructJSON(fmt.Sprintf(`{
+				"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
+				"queryType":"GetCallerIdentity","target":"status.id",
+				"identity":{"assumeRoleChain":[{"roleARN":"arn:aws:iam::111111111111:role/static"}],
+				"assumeRoleChainRef":%q}
+			}`, ref)),
+			Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(observedXR)}},
+			Context:  resource.MustStructJSON(ctx),
+		}
+		rsp, err := f.RunFunction(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		return rsp, seen
+	}
+
+	t.Run("ContextOverridesStatic", func(t *testing.T) {
+		_, seen := run(t, envRef, `{"apiextensions.crossplane.io/environment":{"roleChain":[
+			{"roleARN":"arn:aws:iam::222222222222:role/hop1","externalID":"ext-1","roleSessionName":"fn-aws-query",
+			 "tags":{"team":"platform"},"transitiveTagKeys":["team"]},
+			{"roleARN":"arn:aws:iam::333333333333:role/hop2"}]}}`)
+		if seen == nil {
+			t.Fatal("awsQuery was not called")
+		}
+		want := []v1beta1.AssumeRole{
+			{
+				RoleARN:           "arn:aws:iam::222222222222:role/hop1",
+				ExternalID:        aws.String("ext-1"),
+				RoleSessionName:   aws.String("fn-aws-query"),
+				Tags:              map[string]string{"team": "platform"},
+				TransitiveTagKeys: []string{"team"},
+			},
+			{RoleARN: "arn:aws:iam::333333333333:role/hop2"},
+		}
+		if diff := cmp.Diff(want, seen.Identity.AssumeRoleChain); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+
+	t.Run("AbsentKeepsStatic", func(t *testing.T) {
+		_, seen := run(t, envRef, `{}`)
+		if seen == nil {
+			t.Fatal("awsQuery was not called")
+		}
+		if diff := cmp.Diff(static, seen.Identity.AssumeRoleChain); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+
+	cases := map[string]struct{ ref, chain, wantMsg string }{
+		"UnrecognizedPrefix": {ref: "bogus.roleChain", chain: `[]`, wantMsg: "unrecognized reference"},
+		"NotAList":           {ref: envRef, chain: `{"roleARN":"arn:aws:iam::222222222222:role/x"}`, wantMsg: "expected a list"},
+		"NotAnObject":        {ref: envRef, chain: `["arn:aws:iam::222222222222:role/x"]`, wantMsg: "role 0 is not an object"},
+		"MissingRoleARN":     {ref: envRef, chain: `[{"roleARN":"arn:aws:iam::222222222222:role/x"},{"externalID":"e"}]`, wantMsg: "role 1 is missing"},
+		"WrongFieldType":     {ref: envRef, chain: `[{"roleARN":"arn:aws:iam::222222222222:role/x","tags":"team"}]`, wantMsg: "role 0"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rsp, seen := run(t, tc.ref, fmt.Sprintf(`{"apiextensions.crossplane.io/environment":{"roleChain":%s}}`, tc.chain))
+			if seen != nil {
+				t.Error("awsQuery should not be called for a malformed assumeRoleChainRef")
+			}
+			msg := rsp.GetResults()[0].GetMessage()
+			if !hasFatal(rsp) || !strings.Contains(msg, tc.ref) || !strings.Contains(msg, tc.wantMsg) {
+				t.Errorf("want a fatal result naming %q and %q, got: %v", tc.ref, tc.wantMsg, rsp.GetResults())
+			}
+		})
+	}
+}
+
 func TestRunFunctionIntervalSkip(t *testing.T) {
 	called := false
 	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, _ *v1beta1.Input) (any, error) {
