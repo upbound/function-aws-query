@@ -117,7 +117,8 @@ azresourcegraph's `queryRef`/`subscriptionsRef`.
 The function pod's base identity is shared by every composition on the control
 plane, so prefer a `context.` path fed from platform-controlled config (e.g. an
 EnvironmentConfig) for `assumeRoleChainRef`: a `spec.` path lets any XR author
-pick the role. The target roles' trust policies remain the real control.
+pick the role. An empty or malformed chain is fatal rather than falling back to
+the base identity. The target roles' trust policies remain the real control.
 
 ## Authentication
 

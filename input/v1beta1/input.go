@@ -126,8 +126,8 @@ type Identity struct {
 	AssumeRoleChain []AssumeRole `json:"assumeRoleChain,omitempty"`
 
 	// AssumeRoleChainRef resolves AssumeRoleChain from a status./context./spec.
-	// field path that holds a list of AssumeRole objects (roleARN required).
-	// Overrides AssumeRoleChain when set.
+	// field path that holds a non-empty list of AssumeRole objects (roleARN
+	// required, unknown fields rejected). Overrides AssumeRoleChain when set.
 	// +optional
 	AssumeRoleChainRef *string `json:"assumeRoleChainRef,omitempty"`
 }

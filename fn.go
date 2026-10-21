@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	"github.com/upbound/function-aws-query/input/v1beta1"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -265,12 +265,18 @@ func toFilters(v any) ([]v1beta1.Filter, error) {
 }
 
 // toAssumeRoleChain converts a resolved reference value into a
-// []v1beta1.AssumeRole. The value must be a list of objects using the
-// AssumeRole field names, each with a "roleARN" string.
+// []v1beta1.AssumeRole. The value must be a non-empty list of objects using the
+// AssumeRole field names, each with a "roleARN" string. Entries are decoded as
+// strictly as the static Input (exact field names, unknown fields rejected).
 func toAssumeRoleChain(v any) ([]v1beta1.AssumeRole, error) {
 	list, ok := v.([]any)
 	if !ok {
 		return nil, errors.New("expected a list of {roleARN, ...} objects")
+	}
+	if len(list) == 0 {
+		// An empty chain would silently drop the static chain and run the
+		// query as the function's base identity.
+		return nil, errors.New("expected at least one role, got an empty list")
 	}
 	out := make([]v1beta1.AssumeRole, len(list))
 	for i, e := range list {
@@ -281,12 +287,13 @@ func toAssumeRoleChain(v any) ([]v1beta1.AssumeRole, error) {
 		if arn, _ := m["roleARN"].(string); arn == "" {
 			return nil, errors.Errorf("role %d is missing a string 'roleARN'", i)
 		}
-		// Round-trip through JSON so the AssumeRole field names and types apply.
+		// Round-trip through JSON with the decoder options the SDK uses for the
+		// Input, so the AssumeRole field names and types apply.
 		b, err := json.Marshal(m)
 		if err != nil {
 			return nil, errors.Wrapf(err, "role %d", i)
 		}
-		if err := json.Unmarshal(b, &out[i]); err != nil {
+		if err := json.Unmarshal(b, &out[i], json.RejectUnknownMembers(true)); err != nil {
 			return nil, errors.Wrapf(err, "role %d", i)
 		}
 	}
