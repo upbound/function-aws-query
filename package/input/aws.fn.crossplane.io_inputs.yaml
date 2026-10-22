@@ -115,6 +115,13 @@ spec:
                   - roleARN
                   type: object
                 type: array
+              assumeRoleChainRef:
+                description: |-
+                  AssumeRoleChainRef resolves AssumeRoleChain from a status./context./spec.
+                  field path that holds a non-empty list of AssumeRole objects (roleARN
+                  required, unknown fields rejected). Overrides AssumeRoleChain when set. If
+                  the path doesn't resolve, AssumeRoleChain is used; without one that is fatal.
+                type: string
               source:
                 default: Secret
                 description: Source of the base credentials.

@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.35.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.2
 	github.com/crossplane/function-sdk-go v0.7.1
+	github.com/go-json-experiment/json v0.0.0-20240815175050-ebd3a8989ca1
 	github.com/google/go-cmp v0.7.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/ini.v1 v1.67.2
@@ -41,7 +42,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/go-json-experiment/json v0.0.0-20240815175050-ebd3a8989ca1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.22.5 // indirect

@@ -124,6 +124,13 @@ type Identity struct {
 	// credentials resolved from Source.
 	// +optional
 	AssumeRoleChain []AssumeRole `json:"assumeRoleChain,omitempty"`
+
+	// AssumeRoleChainRef resolves AssumeRoleChain from a status./context./spec.
+	// field path that holds a non-empty list of AssumeRole objects (roleARN
+	// required, unknown fields rejected). Overrides AssumeRoleChain when set. If
+	// the path doesn't resolve, AssumeRoleChain is used; without one that is fatal.
+	// +optional
+	AssumeRoleChainRef *string `json:"assumeRoleChainRef,omitempty"`
 }
 
 // IdentitySource controls how base credentials are resolved.

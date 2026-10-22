@@ -104,14 +104,23 @@ skipQueryWhenTargetHasData: true        # optional
 queryIntervalMinutes: 10                # optional throttle
 identity:                               # optional; defaults to Secret
   source: Secret                        # Secret | IRSA | WebIdentity | PodIdentity
-  assumeRoleChain:
+  assumeRoleChain:                      # or assumeRoleChainRef: <path> (status./context./spec.)
   - roleARN: arn:aws:iam::222222222222:role/crossplane-readonly
 ```
 
-**Dynamic queries:** `regionRef`, `filtersRef`, and `parametersRef` resolve their
-value from a `status.`/`context.`/`spec.` path at runtime (overriding the static
-field), so a prior pipeline step or the XR can drive the query — the AWS analog
-of azresourcegraph's `queryRef`/`subscriptionsRef`.
+**Dynamic queries:** `regionRef`, `filtersRef`, `parametersRef`, and
+`identity.assumeRoleChainRef` resolve their value from a
+`status.`/`context.`/`spec.` path at runtime (overriding the static field), so a
+prior pipeline step or the XR can drive the query — the AWS analog of
+azresourcegraph's `queryRef`/`subscriptionsRef`.
+
+The function pod's base identity is shared by every composition on the control
+plane, so prefer a `context.` path fed from platform-controlled config (e.g. an
+EnvironmentConfig) for `assumeRoleChainRef`: a `spec.` path lets any XR author
+pick the role. The ref never falls back to the base identity: an empty or
+malformed chain is fatal, and a path that doesn't resolve uses the static
+`assumeRoleChain` if one is set and is fatal otherwise. The target roles' trust
+policies remain the real control. See `example/composition-assume-role-chain-ref.yaml`.
 
 ## Authentication
 

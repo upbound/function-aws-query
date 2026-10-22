@@ -983,6 +983,117 @@ func TestRunFunctionResolvesRefs(t *testing.T) {
 	}
 }
 
+// TestRunFunctionResolvesAssumeRoleChainRef proves identity.assumeRoleChainRef
+// replaces the static chain before the query runs (from context, spec or
+// status), keeps it when the path is absent, and is fatal for a malformed value
+// or for an absent path with no static chain to fall back to.
+func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
+	const envRef = "context.[apiextensions.crossplane.io/environment].roleChain"
+	static := []v1beta1.AssumeRole{{RoleARN: "arn:aws:iam::111111111111:role/static"}}
+	runWith := func(t *testing.T, identity, ctx, xr string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
+		t.Helper()
+		var seen *v1beta1.Input
+		f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, in *v1beta1.Input) (any, error) {
+			seen = in
+			return map[string]any{}, nil
+		}}}
+		req := &fnv1.RunFunctionRequest{
+			Meta: &fnv1.RequestMeta{Tag: "test"},
+			Input: resource.MustStructJSON(fmt.Sprintf(`{
+				"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
+				"queryType":"GetCallerIdentity","target":"status.id",
+				"identity":%s
+			}`, identity)),
+			Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(xr)}},
+			Context:  resource.MustStructJSON(ctx),
+		}
+		rsp, err := f.RunFunction(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		return rsp, seen
+	}
+	run := func(t *testing.T, ref, ctx, xr string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
+		t.Helper()
+		return runWith(t, fmt.Sprintf(`{"assumeRoleChain":[{"roleARN":"arn:aws:iam::111111111111:role/static"}],"assumeRoleChainRef":%q}`, ref), ctx, xr)
+	}
+
+	chain := `[
+		{"roleARN":"arn:aws:iam::222222222222:role/hop1","externalID":"ext-1","roleSessionName":"fn-aws-query",
+		 "tags":{"team":"platform"},"transitiveTagKeys":["team"]},
+		{"roleARN":"arn:aws:iam::333333333333:role/hop2"}]`
+	want := []v1beta1.AssumeRole{
+		{
+			RoleARN:           "arn:aws:iam::222222222222:role/hop1",
+			ExternalID:        aws.String("ext-1"),
+			RoleSessionName:   aws.String("fn-aws-query"),
+			Tags:              map[string]string{"team": "platform"},
+			TransitiveTagKeys: []string{"team"},
+		},
+		{RoleARN: "arn:aws:iam::333333333333:role/hop2"},
+	}
+	sources := map[string]struct{ ref, ctx, xr string }{
+		"ContextOverridesStatic": {ref: envRef, ctx: `{"apiextensions.crossplane.io/environment":{"roleChain":` + chain + `}}`, xr: observedXR},
+		"SpecOverridesStatic":    {ref: "spec.roleChain", ctx: `{}`, xr: `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"test"},"spec":{"roleChain":` + chain + `}}`},
+		"StatusOverridesStatic":  {ref: "status.roleChain", ctx: `{}`, xr: `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"test"},"status":{"roleChain":` + chain + `}}`},
+	}
+	for name, tc := range sources {
+		t.Run(name, func(t *testing.T) {
+			_, seen := run(t, tc.ref, tc.ctx, tc.xr)
+			if seen == nil {
+				t.Fatal("awsQuery was not called")
+			}
+			if diff := cmp.Diff(want, seen.Identity.AssumeRoleChain); diff != "" {
+				t.Errorf("-want +got:\n%s", diff)
+			}
+		})
+	}
+
+	t.Run("AbsentKeepsStatic", func(t *testing.T) {
+		_, seen := run(t, envRef, `{}`, observedXR)
+		if seen == nil {
+			t.Fatal("awsQuery was not called")
+		}
+		if diff := cmp.Diff(static, seen.Identity.AssumeRoleChain); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+
+	// Without a static chain, an unresolved ref must not silently run the query
+	// as the function's base identity.
+	t.Run("AbsentWithoutStaticIsFatal", func(t *testing.T) {
+		rsp, seen := runWith(t, fmt.Sprintf(`{"assumeRoleChainRef":%q}`, envRef), `{}`, observedXR)
+		if seen != nil {
+			t.Error("awsQuery should not be called when assumeRoleChainRef does not resolve and there is no static chain")
+		}
+		if !hasFatal(rsp) || !strings.Contains(rsp.GetResults()[0].GetMessage(), envRef) {
+			t.Errorf("want a fatal result naming %q, got: %v", envRef, rsp.GetResults())
+		}
+	})
+
+	cases := map[string]struct{ ref, chain, wantMsg string }{
+		"UnrecognizedPrefix": {ref: "bogus.roleChain", chain: `[]`, wantMsg: "unrecognized reference"},
+		"NotAList":           {ref: envRef, chain: `{"roleARN":"arn:aws:iam::222222222222:role/x"}`, wantMsg: "expected a list"},
+		"NotAnObject":        {ref: envRef, chain: `["arn:aws:iam::222222222222:role/x"]`, wantMsg: "role 0 is not an object"},
+		"MissingRoleARN":     {ref: envRef, chain: `[{"roleARN":"arn:aws:iam::222222222222:role/x"},{"externalID":"e"}]`, wantMsg: "role 1 is missing"},
+		"WrongFieldType":     {ref: envRef, chain: `[{"roleARN":"arn:aws:iam::222222222222:role/x","tags":"team"}]`, wantMsg: "role 0"},
+		"UnknownField":       {ref: envRef, chain: `[{"roleARN":"arn:aws:iam::222222222222:role/x","externalId":"e"}]`, wantMsg: "role 0"},
+		"EmptyList":          {ref: envRef, chain: `[]`, wantMsg: "empty list"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rsp, seen := run(t, tc.ref, fmt.Sprintf(`{"apiextensions.crossplane.io/environment":{"roleChain":%s}}`, tc.chain), observedXR)
+			if seen != nil {
+				t.Error("awsQuery should not be called for a malformed assumeRoleChainRef")
+			}
+			msg := rsp.GetResults()[0].GetMessage()
+			if !hasFatal(rsp) || !strings.Contains(msg, tc.ref) || !strings.Contains(msg, tc.wantMsg) {
+				t.Errorf("want a fatal result naming %q and %q, got: %v", tc.ref, tc.wantMsg, rsp.GetResults())
+			}
+		})
+	}
+}
+
 func TestRunFunctionIntervalSkip(t *testing.T) {
 	called := false
 	f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, _ *v1beta1.Input) (any, error) {

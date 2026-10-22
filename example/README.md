@@ -115,6 +115,28 @@ existing AWS provider secret. The `Identity.source` selects the mechanism:
 An optional `identity.assumeRoleChain` assumes one or more roles on top of the
 base credentials (e.g. cross-account reads). See `composition-irsa.yaml`.
 
+### Choosing the role at runtime (`assumeRoleChainRef`)
+
+`identity.assumeRoleChainRef` reads the chain from a `context.`/`status.`/`spec.`
+path instead, so one Composition can assume a different role per control plane.
+`composition-assume-role-chain-ref.yaml` takes it from the environment context,
+which a `function-environment-configs` step fills from a platform-owned
+EnvironmentConfig; `render` seeds it with `--context-values`. Use a role your
+credentials can assume:
+
+```shell
+make render-assume-role ROLE_ARN=arn:aws:iam::222222222222:role/crossplane-readonly
+# or, with `make serve` running:
+crossplane render xr.yaml composition-assume-role-chain-ref.yaml functions.yaml \
+  --function-credentials=secrets/aws-creds.yaml \
+  --context-values='apiextensions.crossplane.io/environment={"awsQuery":{"roleChain":[{"roleARN":"arn:aws:iam::222222222222:role/crossplane-readonly"}]}}' \
+  -rc
+```
+
+`status.callerIdentity.arn` shows the assumed role. Without the context value the
+step is fatal: the example has no static `assumeRoleChain` to fall back to, and
+the function never falls back to its own base identity.
+
 ### Creating the Secret from `~/.aws/credentials`
 
 The function reads the `[default]` profile of an AWS shared-credentials INI, so
