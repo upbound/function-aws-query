@@ -5,6 +5,8 @@
 #   make commands      # print the copy-pasteable render commands (for manual inspection)
 #   make serve         # run the function in the foreground (for manual `crossplane render`)
 #   make render-irsa   # render the IRSA example (needs real IRSA/role; excluded from `render`)
+#   make render-assume-role ROLE_ARN=arn:aws:iam::<acct>:role/<name>
+#                      # render the assumeRoleChainRef example (needs a role your creds can assume)
 #   make clean
 #
 # Requires: go, the crossplane CLI, and working AWS credentials in
@@ -46,7 +48,7 @@ dynamic-context|xr.yaml|composition-dynamic-context.yaml|--context-values='$(CTX
 endef
 export EXAMPLES
 
-.PHONY: render commands serve render-irsa build clean help
+.PHONY: render commands serve render-irsa render-assume-role build clean help
 
 build: $(BIN)
 
@@ -73,6 +75,9 @@ commands:
 	done <<< "$$EXAMPLES"
 	@echo "# irsa (needs real IRSA/Pod Identity + a valid assumeRoleChain role)"
 	@echo "crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -rc"
+	@echo
+	@echo "# assume-role-chain-ref (needs a role your credentials can assume)"
+	@echo "crossplane render xr.yaml composition-assume-role-chain-ref.yaml $(FUNCS) --function-credentials=$(CREDS) --context-values='$$ROLE_CTX' -rc"
 
 render: build
 	@set -uo pipefail
@@ -110,6 +115,21 @@ render-irsa: build
 	for i in $$(seq 1 40); do (exec 3<>/dev/tcp/127.0.0.1/$(PORT)) 2>/dev/null && break; sleep 0.25; done
 	crossplane render xr.yaml composition-irsa.yaml $(FUNCS) -rc
 
+# The assumeRoleChainRef example takes its chain from the environment context,
+# which a real control plane fills from an EnvironmentConfig. The role must be
+# assumable by the credentials in $(CREDS), so it is excluded from `render`.
+ROLE_ARN ?= arn:aws:iam::222222222222:role/crossplane-readonly
+ROLE_CTX := apiextensions.crossplane.io/environment={"awsQuery":{"roleChain":[{"roleARN":"$(ROLE_ARN)"}]}}
+export ROLE_CTX
+
+render-assume-role: build
+	@echo ">> assumeRoleChainRef example: assuming $(ROLE_ARN)"
+	$(BIN) --insecure --address=$(ADDR) >/tmp/fn-render.log 2>&1 &
+	FN_PID=$$!
+	trap 'kill $$FN_PID 2>/dev/null || true' EXIT
+	for i in $$(seq 1 40); do (exec 3<>/dev/tcp/127.0.0.1/$(PORT)) 2>/dev/null && break; sleep 0.25; done
+	crossplane render xr.yaml composition-assume-role-chain-ref.yaml $(FUNCS) --function-credentials=$(CREDS) --context-values='$(ROLE_CTX)' -rc
+
 clean:
 	rm -f $(BIN) /tmp/render-*.out /tmp/fn-render.log
 
@@ -119,5 +139,6 @@ help:
 	@echo "  commands     print the copy-pasteable render commands for manual inspection"
 	@echo "  serve        run the function in the foreground for manual 'crossplane render'"
 	@echo "  render-irsa  render the IRSA example (needs real IRSA/role)"
+	@echo "  render-assume-role ROLE_ARN=...  render the assumeRoleChainRef example"
 	@echo "  build        build the function binary ($(BIN))"
 	@echo "  clean        remove the built binary and render logs"

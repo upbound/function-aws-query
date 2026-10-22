@@ -1,0 +1,36 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function-aws-query-assume-role-chain-ref
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XAccount
+  mode: Pipeline
+  pipeline:
+  # The role to assume is chosen at runtime from the pipeline context, so one
+  # Composition can target a different AWS account per control plane. In a real
+  # control plane a function-environment-configs step loads it from a
+  # platform-owned EnvironmentConfig into the environment context key; `crossplane
+  # render` seeds that key with --context-values (see `make render-assume-role`).
+  # Prefer a context path over spec.*: a spec path lets any XR author pick the role.
+  #
+  # There is no static assumeRoleChain, so if the path doesn't resolve the step is
+  # fatal instead of silently querying as the function's base identity.
+  # GetCallerIdentity makes the assumed role visible in status.callerIdentity.arn.
+  - step: caller-identity
+    functionRef:
+      name: function-aws-query
+    input:
+      apiVersion: aws.fn.crossplane.io/v1beta1
+      kind: Input
+      queryType: GetCallerIdentity
+      target: status.callerIdentity
+      identity:
+        assumeRoleChainRef: context.[apiextensions.crossplane.io/environment].awsQuery.roleChain
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds
