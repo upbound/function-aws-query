@@ -985,11 +985,12 @@ func TestRunFunctionResolvesRefs(t *testing.T) {
 
 // TestRunFunctionResolvesAssumeRoleChainRef proves identity.assumeRoleChainRef
 // replaces the static chain before the query runs (from context, spec or
-// status), keeps it when the path is absent, and is fatal for a malformed value.
+// status), keeps it when the path is absent, and is fatal for a malformed value
+// or for an absent path with no static chain to fall back to.
 func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
 	const envRef = "context.[apiextensions.crossplane.io/environment].roleChain"
 	static := []v1beta1.AssumeRole{{RoleARN: "arn:aws:iam::111111111111:role/static"}}
-	run := func(t *testing.T, ref, ctx, xr string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
+	runWith := func(t *testing.T, identity, ctx, xr string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
 		t.Helper()
 		var seen *v1beta1.Input
 		f := &Function{log: logging.NewNopLogger(), awsQuery: &MockAWSQuery{fn: func(_ context.Context, _ map[string][]byte, in *v1beta1.Input) (any, error) {
@@ -1001,9 +1002,8 @@ func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
 			Input: resource.MustStructJSON(fmt.Sprintf(`{
 				"apiVersion":"aws.fn.crossplane.io/v1beta1","kind":"Input",
 				"queryType":"GetCallerIdentity","target":"status.id",
-				"identity":{"assumeRoleChain":[{"roleARN":"arn:aws:iam::111111111111:role/static"}],
-				"assumeRoleChainRef":%q}
-			}`, ref)),
+				"identity":%s
+			}`, identity)),
 			Observed: &fnv1.State{Composite: &fnv1.Resource{Resource: resource.MustStructJSON(xr)}},
 			Context:  resource.MustStructJSON(ctx),
 		}
@@ -1012,6 +1012,10 @@ func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
 			t.Fatalf("unexpected err: %v", err)
 		}
 		return rsp, seen
+	}
+	run := func(t *testing.T, ref, ctx, xr string) (*fnv1.RunFunctionResponse, *v1beta1.Input) {
+		t.Helper()
+		return runWith(t, fmt.Sprintf(`{"assumeRoleChain":[{"roleARN":"arn:aws:iam::111111111111:role/static"}],"assumeRoleChainRef":%q}`, ref), ctx, xr)
 	}
 
 	chain := `[
@@ -1052,6 +1056,18 @@ func TestRunFunctionResolvesAssumeRoleChainRef(t *testing.T) {
 		}
 		if diff := cmp.Diff(static, seen.Identity.AssumeRoleChain); diff != "" {
 			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+
+	// Without a static chain, an unresolved ref must not silently run the query
+	// as the function's base identity.
+	t.Run("AbsentWithoutStaticIsFatal", func(t *testing.T) {
+		rsp, seen := runWith(t, fmt.Sprintf(`{"assumeRoleChainRef":%q}`, envRef), `{}`, observedXR)
+		if seen != nil {
+			t.Error("awsQuery should not be called when assumeRoleChainRef does not resolve and there is no static chain")
+		}
+		if !hasFatal(rsp) || !strings.Contains(rsp.GetResults()[0].GetMessage(), envRef) {
+			t.Errorf("want a fatal result naming %q, got: %v", envRef, rsp.GetResults())
 		}
 	})
 

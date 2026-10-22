@@ -212,7 +212,8 @@ func (f *Function) resolveParametersRef(req *fnv1.RunFunctionRequest, in *v1beta
 
 // resolveAssumeRoleChainRef resolves Identity.AssumeRoleChainRef into
 // Identity.AssumeRoleChain (overriding any static chain), so the role to assume
-// can be chosen at runtime.
+// can be chosen at runtime. An unresolved path keeps the static chain; with no
+// static chain it is fatal, so the query never silently runs as the base identity.
 func (f *Function) resolveAssumeRoleChainRef(req *fnv1.RunFunctionRequest, in *v1beta1.Input, rsp *fnv1.RunFunctionResponse) error {
 	if in.Identity == nil || in.Identity.AssumeRoleChainRef == nil || *in.Identity.AssumeRoleChainRef == "" {
 		return nil
@@ -224,7 +225,12 @@ func (f *Function) resolveAssumeRoleChainRef(req *fnv1.RunFunctionRequest, in *v
 	}
 	v, ok := GetNestedValue(root, path)
 	if !ok {
-		return nil
+		if len(in.Identity.AssumeRoleChain) > 0 {
+			return nil
+		}
+		err := errors.Errorf("assumeRoleChainRef %q did not resolve and no static assumeRoleChain is set; refusing to run as the function's base identity", *in.Identity.AssumeRoleChainRef)
+		response.Fatal(rsp, err)
+		return err
 	}
 	chain, err := toAssumeRoleChain(v)
 	if err != nil {
