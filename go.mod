@@ -1,6 +1,6 @@
 module github.com/upbound/function-aws-query
 
-go 1.25.10
+go 1.26.10
 
 require (
 	github.com/alecthomas/kong v1.15.0
