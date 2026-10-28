@@ -16,7 +16,7 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20240815175050-ebd3a8989ca1
 	github.com/google/go-cmp v0.7.0
 	google.golang.org/protobuf v1.36.11
-	gopkg.in/ini.v1 v1.67.2
+	gopkg.in/ini.v1 v1.67.3
 	k8s.io/apimachinery v0.35.3
 	sigs.k8s.io/controller-tools v0.20.0
 )
