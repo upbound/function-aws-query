@@ -26,8 +26,10 @@ env:
   # Kept in lockstep with ci.yml / tag.yml and the go.mod floor (bumped manually,
   # as elsewhere in these shared workflows).
   GO_VERSION: '1.26.11'
-  # The function package, without a tag. Matches GitHub's owner/repo.
-  XPKG: xpkg.upbound.io/${{ github.repository }}
+  # Throwaway e2e artifacts (the built function + the e2e project) are pushed under
+  # the e2e org (UP_ORG) the robot owns -- the e2e robot can't push to the
+  # github.repository (upbound/) namespace.
+  XPKG_REGISTRY: xpkg.upbound.io
 
 jobs:
   e2e:
@@ -92,7 +94,9 @@ jobs:
           set -euo pipefail
           ./crossplane xpkg build --package-file=function.xpkg \
             --package-root=package/ --embed-runtime-image-tarball=runtime-amd64.tar
-          DEV_PKG="${XPKG@L}:v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          DEV_PKG="${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e:v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
+          DEV_PKG="${DEV_PKG,,}"
           ./crossplane xpkg push --package-files function.xpkg "${DEV_PKG}"
           echo "FUNCTION_PKG=${DEV_PKG}" >> "$GITHUB_ENV"
 
@@ -113,4 +117,7 @@ jobs:
       - name: Run e2e tests
         if: steps.harness.outputs.present == 'true'
         working-directory: e2e
-        run: up test run tests/* --e2e
+        run: |
+          REPO="${GITHUB_REPOSITORY##*/}"
+          up test run tests/* --e2e --public \
+            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e-project"
