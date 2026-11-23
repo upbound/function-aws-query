@@ -13,13 +13,10 @@ name: End to End Testing
 # be rolled out fleet-wide before every repo has tests.
 
 on:
-  # https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
-  # pull_request_target is potentially dangerous target so we keep it strict
-  # under the label and benefit from secret propagation
-  pull_request_target:
-    types:
-      - synchronize
-      - labeled
+  # TEMPORARY (iteration branch only): pull_request runs this workflow from the
+  # branch, so it can be validated without merging to main each time. The shipping
+  # version uses pull_request_target + the run-e2e-tests label.
+  pull_request: {}
 
 env:
   UP_API_TOKEN: ${{ secrets.UP_E2E_API_TOKEN || secrets.UP_API_TOKEN }}
@@ -34,7 +31,6 @@ env:
 
 jobs:
   e2e:
-    if: contains(github.event.pull_request.labels.*.name, 'run-e2e-tests')
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -81,8 +77,6 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           target: image
           build-args:
             GO_VERSION=${{ env.GO_VERSION }}
