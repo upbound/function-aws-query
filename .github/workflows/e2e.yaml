@@ -95,21 +95,19 @@ jobs:
           ./crossplane xpkg build --package-file=function.xpkg \
             --package-root=package/ --embed-runtime-image-tarball=runtime-amd64.tar
           REPO="${GITHUB_REPOSITORY##*/}"
-          DEV_PKG="${XPKG_REGISTRY}/${UP_ORG}/${REPO}:v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
-          DEV_PKG="${DEV_PKG,,}"
+          DEV_VERSION="v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
+          DEV_PKG="${XPKG_REGISTRY}/${UP_ORG}/${REPO,,}:${DEV_VERSION}"
           ./crossplane xpkg push --package-files function.xpkg "${DEV_PKG}"
-          echo "FUNCTION_PKG=${DEV_PKG}" >> "$GITHUB_ENV"
+          echo "FUNCTION_VERSION=${DEV_VERSION}" >> "$GITHUB_ENV"
 
-      # Replace the @FUNCTION_PKG@ sentinel in the test(s) with the package just
-      # pushed, so the E2ETest installs this PR's build.
-      - name: Pin e2e test to dev package
+      # Replace the @FUNCTION_VERSION@ sentinel in the e2e project's dependsOn with
+      # the dev tag just pushed, so the test configuration installs this PR's build.
+      - name: Pin e2e project to dev package
         if: steps.harness.outputs.present == 'true'
         run: |
           set -euo pipefail
-          while IFS= read -r -d '' f; do
-            sed -i "s|@FUNCTION_PKG@|${FUNCTION_PKG}|g" "$f"
-          done < <(find e2e/tests -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
-          grep -rn 'package:' e2e/tests || true
+          sed -i "s|@FUNCTION_VERSION@|${FUNCTION_VERSION}|g" e2e/upbound.yaml
+          grep -n -B2 'version:' e2e/upbound.yaml
 
       - name: Switch up context
         if: steps.harness.outputs.present == 'true'
