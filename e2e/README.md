@@ -103,3 +103,5 @@ Renovate security-patch PR — can only auto-merge once this passes.
 For quick checks against real AWS without a control plane, use the render harness
 in [`../example`](../example) (`make -C ../example render`). The e2e harness here
 is the heavier, control-plane-backed gate.
+
+<!-- throwaway: e2e smoke test of the shipped workflow, do not merge -->
