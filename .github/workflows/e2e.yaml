@@ -121,4 +121,4 @@ jobs:
         run: |
           REPO="${GITHUB_REPOSITORY##*/}"
           up test run tests/* --e2e --public \
-            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e"
+            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}"
