@@ -1,0 +1,58 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xqueries.e2e.aws-query.upbound.io
+spec:
+  compositeTypeRef:
+    apiVersion: e2e.aws-query.upbound.io/v1alpha1
+    kind: XQuery
+  mode: Pipeline
+  pipeline:
+    # Two of the cheapest query types: GetCallerIdentity needs no IAM permission
+    # beyond a valid identity, DescribeRegions needs only ec2:DescribeRegions.
+    # Neither reads or creates any account resource, so the test is deterministic
+    # and leaves nothing behind.
+    #
+    # Credentials use the same in-cluster, no-secrets-in-CI method the solutions
+    # configuration-* repos use: Upbound's proidc system mints a web-identity token
+    # for the workload and the function assumes an AWS role with it. Providers get
+    # this via credentials.source: Upbound; the function has no Upbound source, so
+    # the DeploymentRuntimeConfig in tests/e2etest-queries/e2etest.yaml annotates
+    # the function pod for proidc, and identity.source: WebIdentity reads the
+    # injected token from fsPath. roleARN is the dedicated function e2e role whose
+    # trust allows proidc subject mcp:solutions/*:function:* (see e2e/README.md).
+    - step: caller-identity
+      functionRef:
+        name: function-aws-query
+      input:
+        apiVersion: aws.fn.crossplane.io/v1beta1
+        kind: Input
+        queryType: GetCallerIdentity
+        target: status.callerIdentity
+        identity:
+          source: WebIdentity
+          webIdentity:
+            roleARN: arn:aws:iam::609897127049:role/solutions-e2e-function
+            tokenConfig:
+              source: Filesystem
+              fsPath: /var/run/secrets/upbound.io/provider/token
+    - step: available-regions
+      functionRef:
+        name: function-aws-query
+      input:
+        apiVersion: aws.fn.crossplane.io/v1beta1
+        kind: Input
+        queryType: DescribeRegions
+        region: eu-central-1
+        target: status.allAvailableRegions
+        identity:
+          source: WebIdentity
+          webIdentity:
+            roleARN: arn:aws:iam::609897127049:role/solutions-e2e-function
+            tokenConfig:
+              source: Filesystem
+              fsPath: /var/run/secrets/upbound.io/provider/token
+    # No composed resources exist, so mark the XR Ready once the queries ran.
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready
