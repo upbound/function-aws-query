@@ -26,7 +26,6 @@ env:
   UP_ORG: ${{ secrets.UP_E2E_ORG || secrets.UP_ORG }}
   UP_GROUP: ${{ secrets.UP_E2E_GROUP || secrets.UP_GROUP || 'default' }}
   UP_ROBOT_ID: ${{ secrets.UP_E2E_ROBOT_ID || secrets.UP_ROBOT_ID }}
-  GO_VERSION: '1.26.0'
   # The function package, without a tag. Matches GitHub's owner/repo.
   XPKG: xpkg.upbound.io/${{ github.repository }}
 
@@ -51,6 +50,12 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "No e2e/ harness in this repo; nothing to run."
           fi
+
+      # Build the runtime with the Go version the module requires, read from
+      # go.mod so it never drifts from the repo (the module's toolchain floor).
+      - name: Resolve Go version from go.mod
+        if: steps.harness.outputs.present == 'true'
+        run: echo "GO_VERSION=$(awk '/^go /{print $2; exit}' go.mod)" >> "$GITHUB_ENV"
 
       - name: Install and login with up
         if: steps.harness.outputs.present == 'true' && env.UP_API_TOKEN != '' && env.UP_ORG != ''
