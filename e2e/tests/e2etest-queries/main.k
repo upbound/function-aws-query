@@ -30,7 +30,14 @@ _items = [
                         template.metadata.annotations: {
                             "proidc.cloud-spaces.upbound.io/identity" = "function.function-aws-query"
                         }
-                        template.spec = {}
+                        # The pod template requires at least one container; name it
+                        # so the annotation merges onto the function's runtime pod
+                        # rather than adding a second container.
+                        template.spec.containers: [
+                            {
+                                name = "package-runtime"
+                            }
+                        ]
                     }
                 }
                 # The function under test, with the runtime config attached.
