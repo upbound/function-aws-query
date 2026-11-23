@@ -100,14 +100,15 @@ jobs:
           ./crossplane xpkg push --package-files function.xpkg "${DEV_PKG}"
           echo "FUNCTION_PKG=${DEV_PKG}" >> "$GITHUB_ENV"
 
-      # Pin the E2ETest's `package: ${FUNCTION_PKG}` to the package just pushed.
+      # Replace the @FUNCTION_PKG@ sentinel in the KCL test(s) with the package
+      # just pushed, so the E2ETest installs this PR's build.
       - name: Pin e2e test to dev package
         if: steps.harness.outputs.present == 'true'
         run: |
           set -euo pipefail
           while IFS= read -r -d '' f; do
-            sed -i "s|[$][{]FUNCTION_PKG[}]|${FUNCTION_PKG}|g" "$f"
-          done < <(find e2e/tests -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
+            sed -i "s|@FUNCTION_PKG@|${FUNCTION_PKG}|g" "$f"
+          done < <(find e2e/tests -type f \( -name '*.k' -o -name '*.yaml' -o -name '*.yml' \) -print0)
           grep -rn 'package:' e2e/tests || true
 
       - name: Switch up context
