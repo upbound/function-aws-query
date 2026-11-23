@@ -79,10 +79,10 @@ Attach a minimal read policy — for this harness only `ec2:DescribeRegions`
 ## Two repos, one function
 
 The function dev build is pushed to `solutions/<repo>` (the function's own repo),
-and the wrapper project to **`solutions/<repo>-e2e`**. They must be separate:
+and the wrapper project to **`solutions/<repo>-e2e-wrapper`**. They must be separate:
 Crossplane's package lock keys dependency-graph nodes by source repo, so a project
 and a function sharing one repo collide (`node ... already exists`). The
-`<repo>-e2e` repo is granted to the e2e robot in `solutions-gitops-prod`.
+`<repo>-e2e-wrapper` repo is granted to the e2e robot in `solutions-gitops-prod`.
 
 ## What runs in CI
 
@@ -94,7 +94,7 @@ On a pull request labelled `run-e2e-tests` (Renovate adds this automatically),
 2. substitutes that package into the `E2ETest` (`@FUNCTION_PKG@`),
 3. switches to the e2e Spaces control plane group, and
 4. runs `up test run tests/* --e2e`, pushing the wrapper project to
-   `solutions/<repo>-e2e` (no AWS credentials involved).
+   `solutions/<repo>-e2e-wrapper` (no AWS credentials involved).
 
 Branch protection on `main` requires the `e2e` check, so a PR — including a
 Renovate security-patch PR — can only auto-merge once this passes.

@@ -1,7 +1,7 @@
 apiVersion: meta.dev.upbound.io/v2alpha1
 kind: Project
 metadata:
-  name: function-aws-query-e2e
+  name: function-aws-query-e2e-wrapper
 spec:
   # Intentionally empty: the test installs the functions, XRD and Composition as
   # E2ETest initResources (see tests/e2etest-queries/test.yaml), not as packaged
@@ -16,4 +16,4 @@ spec:
   maintainer: Upbound <support@upbound.io>
   readme: |
     See e2e/README.md.
-  repository: xpkg.upbound.io/upbound/function-aws-query-e2e
+  repository: xpkg.upbound.io/upbound/function-aws-query-e2e-wrapper

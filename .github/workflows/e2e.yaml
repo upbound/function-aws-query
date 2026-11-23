@@ -118,7 +118,7 @@ jobs:
       # The wrapper project is pushed to a SEPARATE repo from the function: both
       # the project and the function-under-test would otherwise share the same
       # source in Crossplane's package lock, which collides ("node already
-      # exists"). The <repo>-e2e repo is granted to the e2e robot in
+      # exists"). The <repo>-e2e-wrapper repo is granted to the e2e robot in
       # solutions-gitops-prod.
       - name: Run e2e tests
         if: steps.harness.outputs.present == 'true'
@@ -126,4 +126,4 @@ jobs:
         run: |
           REPO="${GITHUB_REPOSITORY##*/}"
           up test run tests/* --e2e --public \
-            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e"
+            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e-wrapper"
