@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	sqtypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/aws/smithy-go/encoding/cbor"
 	"github.com/google/go-cmp/cmp"
 	"github.com/upbound/function-aws-query/input/v1beta1"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -28,6 +30,8 @@ import (
 type respStub struct {
 	bodies      []string
 	contentType string
+	// headers are extra response headers set on every response.
+	headers map[string]string
 	// status is the HTTP status of every response; zero means 200.
 	status int
 	calls  int
@@ -52,6 +56,9 @@ func (s *respStub) Do(req *http.Request) (*http.Response, error) {
 	if s.contentType != "" {
 		h.Set("Content-Type", s.contentType)
 	}
+	for k, v := range s.headers {
+		h.Set(k, v)
+	}
 	status := s.status
 	if status == 0 {
 		status = http.StatusOK
@@ -70,6 +77,40 @@ func stubCfg(rt *respStub) aws.Config {
 		HTTPClient:       rt,
 		RetryMaxAttempts: 1,
 	}
+}
+
+// cborBody re-encodes a JSON fixture as CBOR for SDK clients that speak Smithy RPC v2 CBOR.
+func cborBody(t *testing.T, js string) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(js), &v); err != nil {
+		t.Fatalf("cborBody: %v", err)
+	}
+	return string(cbor.Encode(toCBOR(t, v)))
+}
+
+func toCBOR(t *testing.T, v any) cbor.Value {
+	t.Helper()
+	switch x := v.(type) {
+	case map[string]any:
+		m := cbor.Map{}
+		for k, e := range x {
+			m[k] = toCBOR(t, e)
+		}
+		return m
+	case []any:
+		l := cbor.List{}
+		for _, e := range x {
+			l = append(l, toCBOR(t, e))
+		}
+		return l
+	case string:
+		return cbor.String(x)
+	case bool:
+		return cbor.Bool(x)
+	}
+	t.Fatalf("cborBody: unsupported JSON value %T", v)
+	return nil
 }
 
 func newQuery() *AWSQuery { return &AWSQuery{log: logging.NewNopLogger()} }
@@ -407,8 +448,17 @@ func TestListServiceQuotasPaginates(t *testing.T) {
 func TestGetResourcesPaginates(t *testing.T) {
 	page1 := `{"PaginationToken":"tok","ResourceTagMappingList":[{"ResourceARN":"arn:a","Tags":[{"Key":"Environment","Value":"prod"}]}]}`
 	page2 := `{"PaginationToken":"","ResourceTagMappingList":[{"ResourceARN":"arn:b","Tags":[]}]}`
-	in := &v1beta1.Input{Parameters: map[string]string{"resourceTypeFilters": "ec2:subnet"}}
-	got, err := newQuery().getResources(context.Background(), stubCfg(&respStub{bodies: []string{page1, page2}, contentType: "application/x-amz-json-1.1"}), in)
+	in := &v1beta1.Input{
+		Parameters: map[string]string{"resourceTypeFilters": "ec2:subnet"},
+		Filters:    []v1beta1.Filter{{Name: "Environment", Values: []string{"prod"}}},
+	}
+	stub := &respStub{
+		bodies:      []string{cborBody(t, page1), cborBody(t, page2)},
+		contentType: "application/cbor",
+		headers:     map[string]string{"Smithy-Protocol": "rpc-v2-cbor"},
+	}
+	// The Tagging API client speaks Smithy RPC v2 CBOR since resourcegroupstaggingapi v1.42.0.
+	got, err := newQuery().getResources(context.Background(), stubCfg(stub), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -418,6 +468,30 @@ func TestGetResourcesPaginates(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
+	}
+	if len(stub.requests) != 2 {
+		t.Fatalf("expected 2 GetResources calls, got %d", len(stub.requests))
+	}
+	// Request bodies are RPC v2 CBOR: decode them and compare the GetResources input field by field.
+	wantReqs := []cbor.Value{
+		cbor.Map{
+			"ResourceTypeFilters": cbor.List{cbor.String("ec2:subnet")},
+			"TagFilters":          cbor.List{cbor.Map{"Key": cbor.String("Environment"), "Values": cbor.List{cbor.String("prod")}}},
+		},
+		cbor.Map{
+			"PaginationToken":     cbor.String("tok"),
+			"ResourceTypeFilters": cbor.List{cbor.String("ec2:subnet")},
+			"TagFilters":          cbor.List{cbor.Map{"Key": cbor.String("Environment"), "Values": cbor.List{cbor.String("prod")}}},
+		},
+	}
+	for i, r := range stub.requests {
+		gotReq, err := cbor.Decode([]byte(r))
+		if err != nil {
+			t.Fatalf("request %d is not CBOR: %v", i, err)
+		}
+		if diff := cmp.Diff(wantReqs[i], gotReq); diff != "" {
+			t.Errorf("request %d -want +got:\n%s", i, diff)
+		}
 	}
 }
 
