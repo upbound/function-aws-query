@@ -5,7 +5,7 @@ name: End to End Testing
 #
 # Runs the repo's end-to-end harness (the up project under e2e/) against a real
 # Spaces control plane. The function is built from the PR head, pushed to a dev
-# tag, and installed by the E2ETest via ${FUNCTION_PKG}. Credentials are
+# tag, and installed as a pinned dependency of the e2e project. Credentials are
 # in-cluster: the function assumes an AWS role through an Upbound proidc
 # web-identity token (no AWS secrets here). See the repo's e2e/README.md.
 #

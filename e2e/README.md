@@ -13,20 +13,19 @@ throwaway control plane.
 
 ```
 e2e/
-├── upbound.yaml                 # throwaway project; intentionally empty (no packaged deps)
-├── apis/.gitkeep                # must exist for `up`, but empty on purpose (see below)
+├── upbound.yaml                 # test configuration; depends on the function under test (pinned by CI)
+├── apis/xqueries/               # XRD + Composition that call the function
 ├── functions/.gitkeep           # must exist for `up`
 └── tests/
     └── e2etest-queries/
-        └── test.yaml            # E2ETest: installs functions + XRD + Composition + DRC, applies an XQuery, waits for Ready
+        └── test.yaml            # E2ETest: patches the default DRC, applies an XQuery, waits for Ready
 ```
 
-Everything the test needs — the two functions, the XRD, the Composition and the
-`DeploymentRuntimeConfig` — is applied as **`initResources`** in `test.yaml`,
-**not** packaged in `apis/`. A packaged Composition would make this configuration
-auto-depend on `function-aws-query`, and Crossplane can't resolve the dev-tag
-build in its dependency graph. Installing the functions directly as `Function`
-CRs sidesteps that: the Composition's `functionRef`s resolve at reconcile time.
+`up test` builds this project, installs it on the control plane (the function
+under test and `function-auto-ready` come along as dependencies), then creates the
+XQuery from `test.yaml`. Dependency-installed functions are named `<org>-<repo>`,
+so the Composition references `solutions-function-aws-query` and
+`crossplane-contrib-function-auto-ready`.
 
 The two query types (`GetCallerIdentity`, `DescribeRegions`) are deliberately the
 cheapest: they need no pre-provisioned AWS resources, create nothing, and need
@@ -49,8 +48,8 @@ function pod and the function assumes an AWS role with it:
   (the same path for function pods as for provider pods), and the Composition's
   `identity.source: WebIdentity` reads it with the dedicated function `roleARN`.
 
-The only value substituted at run time is `@FUNCTION_PKG@` (the package built from
-the PR), never credentials.
+The only value substituted at run time is `@FUNCTION_VERSION@` in `upbound.yaml`
+(the dev tag built from the PR), never credentials.
 
 ### AWS setup (one dedicated role — do NOT widen the shared provider role)
 
@@ -91,7 +90,7 @@ On a pull request labelled `run-e2e-tests` (Renovate adds this automatically),
 
 1. builds the function package from the PR head and pushes it to `solutions/<repo>`
    at a dev tag,
-2. substitutes that package into the `E2ETest` (`@FUNCTION_PKG@`),
+2. pins that tag in `upbound.yaml` (`@FUNCTION_VERSION@`),
 3. switches to the e2e Spaces control plane group, and
 4. runs `up test run tests/* --e2e`, pushing the wrapper project to
    `solutions/<repo>-e2e-wrapper` (no AWS credentials involved).
