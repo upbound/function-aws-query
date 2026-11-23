@@ -1,0 +1,151 @@
+# End-to-end test for function-aws-query. `up test run tests/* --e2e` spins up a
+# throwaway Spaces control plane, applies everything below, and waits for the XR
+# to go Ready. A failed AWS call makes the function return fatal, the XR never
+# goes Ready, and the test fails -- that's the end-to-end signal.
+#
+# Everything is applied as initResources rather than packaged in the project,
+# because a packaged Composition makes the configuration auto-depend on
+# function-aws-query, and Crossplane can't resolve the dev-tag build in its
+# dependency graph. Installing the functions directly as Function CRs sidesteps
+# that: the Composition's functionRefs resolve at reconcile time instead.
+#
+# CI (.github/workflows/e2e.yaml) rewrites @FUNCTION_PKG@ to the package built
+# and pushed from the pull request under test.
+apiVersion: meta.dev.upbound.io/v1alpha1
+kind: E2ETest
+metadata:
+  name: e2e-aws-query
+spec:
+  crossplane:
+    autoUpgrade:
+      channel: Rapid
+  defaultConditions:
+    - Ready
+  initResources:
+    # Patch the control plane's default DeploymentRuntimeConfig so every function
+    # pod gets an Upbound OIDC token with the AWS STS audience. proidc then mounts
+    # the token at /var/run/secrets/upbound.io/provider/token (for function pods
+    # too) and the composition's WebIdentity reads it. Spaces policy only allows
+    # the audience annotation here; proidc auto-assigns the workload identity.
+    - apiVersion: pkg.crossplane.io/v1beta1
+      kind: DeploymentRuntimeConfig
+      metadata:
+        name: default
+      spec:
+        deploymentTemplate:
+          spec:
+            selector: {}
+            template:
+              metadata:
+                annotations:
+                  proidc.cloud-spaces.upbound.io/audience: sts.amazonaws.com
+    # The function under test, pinned to the PR build. No runtimeConfigRef needed
+    # -- it inherits the default DRC above.
+    - apiVersion: pkg.crossplane.io/v1
+      kind: Function
+      metadata:
+        name: function-aws-query
+      spec:
+        package: "@FUNCTION_PKG@"
+    # auto-ready marks the XR Ready once the queries have run. Pinned to a
+    # concrete version: the e2e robot can pull a tag but can't resolve a range.
+    - apiVersion: pkg.crossplane.io/v1
+      kind: Function
+      metadata:
+        name: function-auto-ready
+      spec:
+        package: xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.7.3
+    # XRD defining the namespaced XQuery composite.
+    - apiVersion: apiextensions.crossplane.io/v1
+      kind: CompositeResourceDefinition
+      metadata:
+        name: xqueries.e2e.aws-query.upbound.io
+      spec:
+        group: e2e.aws-query.upbound.io
+        scope: Namespaced
+        names:
+          kind: XQuery
+          plural: xqueries
+        versions:
+          - name: v1alpha1
+            served: true
+            referenceable: true
+            schema:
+              openAPIV3Schema:
+                type: object
+                properties:
+                  spec:
+                    type: object
+                    properties:
+                      region:
+                        type: string
+                  status:
+                    type: object
+                    properties:
+                      callerIdentity:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      allAvailableRegions:
+                        type: array
+                        items:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+    # Composition: two of the cheapest query types. GetCallerIdentity needs only a
+    # valid identity; DescribeRegions needs only ec2:DescribeRegions. Neither reads
+    # or creates any account resource, so the test is deterministic and leaves
+    # nothing behind. Both assume the dedicated solutions-e2e-function role via the
+    # proidc web-identity token (trust: subject mcp:solutions/*:function:*).
+    - apiVersion: apiextensions.crossplane.io/v1
+      kind: Composition
+      metadata:
+        name: xqueries.e2e.aws-query.upbound.io
+      spec:
+        compositeTypeRef:
+          apiVersion: e2e.aws-query.upbound.io/v1alpha1
+          kind: XQuery
+        mode: Pipeline
+        pipeline:
+          - step: caller-identity
+            functionRef:
+              name: function-aws-query
+            input:
+              apiVersion: aws.fn.crossplane.io/v1beta1
+              kind: Input
+              queryType: GetCallerIdentity
+              target: status.callerIdentity
+              identity:
+                source: WebIdentity
+                webIdentity:
+                  roleARN: arn:aws:iam::609897127049:role/solutions-e2e-function
+                  tokenConfig:
+                    source: Filesystem
+                    fsPath: /var/run/secrets/upbound.io/provider/token
+          - step: available-regions
+            functionRef:
+              name: function-aws-query
+            input:
+              apiVersion: aws.fn.crossplane.io/v1beta1
+              kind: Input
+              queryType: DescribeRegions
+              region: eu-central-1
+              target: status.allAvailableRegions
+              identity:
+                source: WebIdentity
+                webIdentity:
+                  roleARN: arn:aws:iam::609897127049:role/solutions-e2e-function
+                  tokenConfig:
+                    source: Filesystem
+                    fsPath: /var/run/secrets/upbound.io/provider/token
+          - step: auto-ready
+            functionRef:
+              name: function-auto-ready
+  manifests:
+    - apiVersion: e2e.aws-query.upbound.io/v1alpha1
+      kind: XQuery
+      metadata:
+        name: e2e-query
+        namespace: default
+      spec:
+        region: eu-central-1
+  skipDelete: false
+  timeoutSeconds: 900

@@ -100,25 +100,30 @@ jobs:
           ./crossplane xpkg push --package-files function.xpkg "${DEV_PKG}"
           echo "FUNCTION_PKG=${DEV_PKG}" >> "$GITHUB_ENV"
 
-      # Replace the @FUNCTION_PKG@ sentinel in the KCL test(s) with the package
-      # just pushed, so the E2ETest installs this PR's build.
+      # Replace the @FUNCTION_PKG@ sentinel in the test(s) with the package just
+      # pushed, so the E2ETest installs this PR's build.
       - name: Pin e2e test to dev package
         if: steps.harness.outputs.present == 'true'
         run: |
           set -euo pipefail
           while IFS= read -r -d '' f; do
             sed -i "s|@FUNCTION_PKG@|${FUNCTION_PKG}|g" "$f"
-          done < <(find e2e/tests -type f \( -name '*.k' -o -name '*.yaml' -o -name '*.yml' \) -print0)
+          done < <(find e2e/tests -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
           grep -rn 'package:' e2e/tests || true
 
       - name: Switch up context
         if: steps.harness.outputs.present == 'true'
         run: up ctx ${{ env.UP_ORG }}/upbound-gcp-us-central-1/${{ env.UP_GROUP }}
 
+      # The wrapper project is pushed to a SEPARATE repo from the function: both
+      # the project and the function-under-test would otherwise share the same
+      # source in Crossplane's package lock, which collides ("node already
+      # exists"). The <repo>-e2e repo is granted to the e2e robot in
+      # solutions-gitops-prod.
       - name: Run e2e tests
         if: steps.harness.outputs.present == 'true'
         working-directory: e2e
         run: |
           REPO="${GITHUB_REPOSITORY##*/}"
           up test run tests/* --e2e --public \
-            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}"
+            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e"

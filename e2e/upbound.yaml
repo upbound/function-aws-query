@@ -3,11 +3,10 @@ kind: Project
 metadata:
   name: function-aws-query-e2e
 spec:
-  dependsOn:
-  - apiVersion: pkg.crossplane.io/v1
-    kind: Function
-    package: xpkg.upbound.io/crossplane-contrib/function-auto-ready
-    version: '>=v0.0.0'
+  # Intentionally empty: the test installs the functions, XRD and Composition as
+  # E2ETest initResources (see tests/e2etest-queries/test.yaml), not as packaged
+  # dependencies. A packaged Composition would make this configuration auto-depend
+  # on function-aws-query, which Crossplane can't resolve at the dev tag.
   description: |
     End-to-end test harness for function-aws-query. This is a throwaway Upbound
     project whose only purpose is to install function-aws-query on a real control
@@ -16,7 +15,5 @@ spec:
   license: Apache-2.0
   maintainer: Upbound <support@upbound.io>
   readme: |
-    See e2e/README.md. The function-aws-query dependency below is pinned to a
-    floating version for local runs; CI rewrites it to the package tag built from
-    the pull request under test (see .github/workflows/e2e.yaml).
+    See e2e/README.md.
   repository: xpkg.upbound.io/upbound/function-aws-query-e2e
