@@ -95,7 +95,7 @@ jobs:
           ./crossplane xpkg build --package-file=function.xpkg \
             --package-root=package/ --embed-runtime-image-tarball=runtime-amd64.tar
           REPO="${GITHUB_REPOSITORY##*/}"
-          DEV_PKG="${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e:v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
+          DEV_PKG="${XPKG_REGISTRY}/${UP_ORG}/${REPO}:v0.0.0-e2e.$(git rev-parse --short=12 HEAD)"
           DEV_PKG="${DEV_PKG,,}"
           ./crossplane xpkg push --package-files function.xpkg "${DEV_PKG}"
           echo "FUNCTION_PKG=${DEV_PKG}" >> "$GITHUB_ENV"
