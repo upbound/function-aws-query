@@ -118,7 +118,4 @@ jobs:
       - name: Run e2e tests
         if: steps.harness.outputs.present == 'true'
         working-directory: e2e
-        run: |
-          REPO="${GITHUB_REPOSITORY##*/}"
-          up test run tests/* --e2e --public \
-            --repository "${XPKG_REGISTRY}/${UP_ORG}/${REPO}-e2e-project"
+        run: up test run tests/* --e2e
