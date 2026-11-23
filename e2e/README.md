@@ -98,3 +98,5 @@ For quick checks against real AWS without a control plane, use the render
 harness in [`../example`](../example) (`make -C ../example render`), which runs
 every example composition through `crossplane render`. The e2e harness here is
 the heavier, control-plane-backed gate.
+
+<!-- e2e smoke test: triggers the first live run of the e2e harness. -->
