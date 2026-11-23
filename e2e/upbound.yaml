@@ -1,22 +1,25 @@
 apiVersion: meta.dev.upbound.io/v2alpha1
 kind: Project
 metadata:
-  name: function-aws-query-e2e
+  name: function-aws-query-e2e-wrapper
 spec:
+  # CI rewrites @FUNCTION_VERSION@ to the dev tag it just built and pushed from
+  # the pull request, so the configuration installs that build as a dependency.
   dependsOn:
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Function
+    package: xpkg.upbound.io/solutions/function-aws-query
+    version: '@FUNCTION_VERSION@'
   - apiVersion: pkg.crossplane.io/v1
     kind: Function
     package: xpkg.upbound.io/crossplane-contrib/function-auto-ready
     version: '>=v0.0.0'
   description: |
-    End-to-end test harness for function-aws-query. This is a throwaway Upbound
-    project whose only purpose is to install function-aws-query on a real control
-    plane (via `up test run tests/* --e2e`) and prove the function answers live
-    AWS queries end to end. It is NOT published to the Marketplace.
+    Test configuration that runs function-aws-query in end-to-end tests: an XRD
+    and a Composition that call the function, installed on a throwaway control
+    plane by `up test run tests/* --e2e`. Never published to production.
   license: Apache-2.0
   maintainer: Upbound <support@upbound.io>
   readme: |
-    See e2e/README.md. The function-aws-query dependency below is pinned to a
-    floating version for local runs; CI rewrites it to the package tag built from
-    the pull request under test (see .github/workflows/e2e.yaml).
-  repository: xpkg.upbound.io/upbound/function-aws-query-e2e
+    See e2e/README.md.
+  repository: xpkg.upbound.io/solutions/function-aws-query-e2e-wrapper

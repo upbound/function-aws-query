@@ -1,0 +1,43 @@
+# End-to-end test for function-aws-query. `up test run tests/* --e2e` spins up a
+# throwaway Spaces control plane, installs this project (the XRD and Composition
+# in apis/, plus the function under test as a dependency), creates the XR and
+# waits for it to go Ready. A failed AWS call makes the function return fatal,
+# the XR never goes Ready, and the test fails.
+apiVersion: meta.dev.upbound.io/v1alpha1
+kind: E2ETest
+metadata:
+  name: e2e-aws-query
+spec:
+  crossplane:
+    autoUpgrade:
+      channel: Rapid
+  defaultConditions:
+    - Ready
+  initResources:
+    # Patch the control plane's default DeploymentRuntimeConfig before the
+    # functions install, so every function pod gets an Upbound OIDC token with
+    # the AWS STS audience, mounted at /var/run/secrets/upbound.io/provider/token
+    # (function pods too). Spaces policy only allows the audience annotation
+    # here; Upbound assigns the workload identity itself.
+    - apiVersion: pkg.crossplane.io/v1beta1
+      kind: DeploymentRuntimeConfig
+      metadata:
+        name: default
+      spec:
+        deploymentTemplate:
+          spec:
+            selector: {}
+            template:
+              metadata:
+                annotations:
+                  proidc.cloud-spaces.upbound.io/audience: sts.amazonaws.com
+  manifests:
+    - apiVersion: e2e.aws-query.upbound.io/v1alpha1
+      kind: XQuery
+      metadata:
+        name: e2e-query
+        namespace: default
+      spec:
+        region: eu-central-1
+  skipDelete: false
+  timeoutSeconds: 900
