@@ -40,4 +40,4 @@ spec:
       spec:
         region: eu-central-1
   skipDelete: false
-  timeoutSeconds: 900
+  timeoutSeconds: 1
