@@ -124,11 +124,13 @@ policies remain the real control. See `example/composition-assume-role-chain-ref
 
 ## Authentication
 
-Mirrors `provider-upjet-aws` — the credentials Secret is a shared-credentials
-INI **byte-identical to the AWS provider's Secret source**, so existing secrets
-are reusable. Supported `identity.source` values: `Secret` (default), `IRSA`,
+The credentials Secret is a shared-credentials INI **byte-identical to
+provider-upjet-aws's Secret source**, so existing secrets are reusable. The
+`identity` fields are similar to the provider's `spec.credentials` but not
+identical (for example `tokenConfig` and `assumeRoleChain[].tags`). Supported `identity.source` values: `Secret` (default), `IRSA`,
 `WebIdentity` (token via Secret or filesystem), `PodIdentity`, plus an
-`assumeRoleChain`. See [`example/README.md`](example/README.md) for the full
+`assumeRoleChain`. Without `roleSessionName`, every role session is named
+`function-aws-query`. See [`example/README.md`](example/README.md) for the full
 matrix and a `DeploymentRuntimeConfig` for IRSA/PodIdentity.
 
 ## Usage

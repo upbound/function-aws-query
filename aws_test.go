@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	sqtypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
 	"github.com/aws/smithy-go/encoding/cbor"
@@ -308,10 +309,53 @@ func TestBuildAWSConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.Credentials == nil {
-			t.Error("expected credentials provider to be set by the chain")
+		if !aws.IsCredentialsProvider(cfg.Credentials, (*stscreds.AssumeRoleProvider)(nil)) {
+			t.Errorf("credentials provider = %T, want an assume-role provider", cfg.Credentials)
 		}
 	})
+
+	t.Run("WebIdentityTokenFileWires", func(t *testing.T) {
+		fs := "/var/run/secrets/upbound.io/provider/token"
+		in := &v1beta1.Input{QueryType: "DescribeRegions", Identity: &v1beta1.Identity{
+			Source: v1beta1.IdentitySourceWebIdentity,
+			WebIdentity: &v1beta1.WebIdentity{
+				RoleARN:     "arn:aws:iam::111:role/x",
+				TokenConfig: &v1beta1.TokenConfig{Source: "Filesystem", FSPath: &fs},
+			},
+		}}
+		cfg, err := buildAWSConfig(context.Background(), map[string][]byte{}, in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !aws.IsCredentialsProvider(cfg.Credentials, (*stscreds.WebIdentityRoleProvider)(nil)) {
+			t.Errorf("credentials provider = %T, want a web identity role provider", cfg.Credentials)
+		}
+	})
+}
+
+func TestRoleSessionName(t *testing.T) {
+	custom := "my-session"
+	webIdentity := func(wi *v1beta1.WebIdentity) string {
+		var o stscreds.WebIdentityRoleOptions
+		webIdentityRoleOptions(wi)(&o)
+		return o.RoleSessionName
+	}
+	assumeRole := func(r v1beta1.AssumeRole) string {
+		var o stscreds.AssumeRoleOptions
+		assumeRoleOptions(r)(&o)
+		return o.RoleSessionName
+	}
+	cases := map[string]struct{ got, want string }{
+		"WebIdentityDefault": {got: webIdentity(&v1beta1.WebIdentity{}), want: defaultRoleSessionName},
+		"WebIdentityCustom":  {got: webIdentity(&v1beta1.WebIdentity{RoleSessionName: custom}), want: custom},
+		"AssumeRoleDefault":  {got: assumeRole(v1beta1.AssumeRole{}), want: defaultRoleSessionName},
+		"AssumeRoleCustom":   {got: assumeRole(v1beta1.AssumeRole{RoleSessionName: &custom}), want: custom},
+	}
+	for name, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s: RoleSessionName = %q, want %q", name, tc.got, tc.want)
+		}
+	}
 }
 
 // --- resolveRegionRef -------------------------------------------------------
