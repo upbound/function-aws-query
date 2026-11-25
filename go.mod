@@ -2,6 +2,8 @@ module github.com/upbound/function-aws-query
 
 go 1.26.10
 
+toolchain go1.26.11
+
 require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/aws/aws-sdk-go-v2 v1.48.0
