@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 
 # We use the latest Go 1.x version unless asked to use something else.
 # The GitHub Actions CI job sets this argument for a consistent Go version.
@@ -40,7 +40,7 @@ RUN --mount=target=. \
 
 # Produce the Function image. We use a very lightweight 'distroless' image that
 # does not include any of the build tools used in previous stages.
-FROM gcr.io/distroless/static-debian13:nonroot AS image
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5 AS image
 WORKDIR /
 COPY --from=build /function /function
 EXPOSE 9443
