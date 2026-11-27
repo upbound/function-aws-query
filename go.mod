@@ -14,7 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi v1.42.0
 	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.43.12
 	github.com/aws/aws-sdk-go-v2/service/sts v1.53.0
-	github.com/aws/smithy-go v1.28.9
+	github.com/aws/smithy-go v1.28.10
 	github.com/crossplane/function-sdk-go v0.7.1
 	github.com/go-json-experiment/json v1.27.2
 	github.com/google/go-cmp v0.7.0
